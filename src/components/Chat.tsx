@@ -18,19 +18,20 @@ const models = [
 ];
 
 const Chat: React.FC = () => {
-  const {
-    messages,
-    isLoading,
-    error,
-    currentSessionId,
-    sessions,
-    attachments,
-    sendMessage,
-    startNewChat,
-    loadSession,
-    handleFileUpload,
-    messagesEndRef
-  } = useChat();
+    const {
+        messages,
+        isLoading,
+        error,
+        currentSessionId,
+        sessions,
+        attachments,
+        sendMessage,
+        startNewChat,
+        loadSession,
+        handleFileUpload,
+        removeAttachment, // Добавляем эту функцию
+        messagesEndRef
+      } = useChat();
   
   const [input, setInput] = useState('');
   const [selectedModel, setSelectedModel] = useState(models[0].id);
@@ -59,14 +60,13 @@ const Chat: React.FC = () => {
       handleSubmit(e);
     }
   };
-  
-  const removeAttachment = (id: string) => {
-    // Предполагается, что setAttachments доступна через useChat
-    // Или ее нужно определить в компоненте
+
+  const handleRemoveAttachment = removeAttachment || ((id: string) => {
     const newAttachments = attachments.filter(file => file.id !== id);
-    // Здесь нужно обновить attachments в useChat
-  };
-  
+    // Здесь можно логировать или показывать предупреждение, что функция в хуке не определена
+    console.warn('removeAttachment is not defined in useChat hook');
+  });
+
   // Функция для задания имени чата из первого сообщения пользователя
   const getChatTitle = (sessionId: string) => {
     const session = sessions.find(s => s.id === sessionId);
@@ -195,7 +195,7 @@ const Chat: React.FC = () => {
             <FileUpload
               attachments={attachments}
               onFileUpload={handleFileUpload}
-              onRemoveAttachment={removeAttachment}
+              onRemoveAttachment={handleRemoveAttachment}
             />
           </div>
           

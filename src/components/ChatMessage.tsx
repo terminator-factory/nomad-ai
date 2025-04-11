@@ -1,8 +1,7 @@
-// src/components/ChatMessage.tsx
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import hljs from 'highlight.js';
+import 'highlight.js/styles/atom-one-dark.css';
 import remarkGfm from 'remark-gfm';
 import { Message } from '../types';
 
@@ -12,6 +11,13 @@ interface ChatMessageProps {
 
 const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const isUser = message.role === 'user';
+  
+  // Код для подсветки синтаксиса при монтировании компонента
+  React.useEffect(() => {
+    document.querySelectorAll('pre code').forEach((el) => {
+      hljs.highlightElement(el as HTMLElement);
+    });
+  }, [message.content]);
   
   return (
     <div className={`py-5 ${isUser ? 'bg-user-message' : 'bg-bot-message'}`}>
@@ -27,27 +33,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
           
           <div className="mt-1 prose prose-invert">
             <ReactMarkdown
-              children={message.content}
               remarkPlugins={[remarkGfm]}
-              components={{
-                code({ node, inline, className, children, ...props }) {
-                  const match = /language-(\w+)/.exec(className || '');
-                  return !inline && match ? (
-                    <SyntaxHighlighter
-                      children={String(children).replace(/\n$/, '')}
-                      style={atomDark}
-                      language={match[1]}
-                      PreTag="div"
-                      {...props}
-                    />
-                  ) : (
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  );
-                }
-              }}
-            />
+            >
+              {message.content}
+            </ReactMarkdown>
           </div>
         </div>
       </div>

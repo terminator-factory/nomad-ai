@@ -22,7 +22,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
   useEffect(() => {
     // Connect to Socket.IO server
-    socketRef.current = io('http://localhost:3001');
+    socketRef.current = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001');
     
     // Handle incoming message streams
     socketRef.current.on('message-chunk', (chunk: string) => {
@@ -220,6 +220,26 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     startNewChat,
     loadSession,
     handleFileUpload,
+    messagesEndRef
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prevAttachments => prevAttachments.filter(file => file.id !== id));
+  };
+  
+  // Убедитесь, что эта функция всегда возвращается из хука
+  return {
+    messages,
+    isLoading,
+    error,
+    currentSessionId,
+    sessions,
+    attachments,
+    sendMessage,
+    startNewChat,
+    loadSession,
+    handleFileUpload,
+    removeAttachment, // Эта функция всегда должна быть здесь
     messagesEndRef
   };
 };
