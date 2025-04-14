@@ -16,103 +16,132 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   const [currentSessionId, setCurrentSessionId] = useState<string>(sessionId);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
-  
+
   const socketRef = useRef<Socket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     // Connect to Socket.IO server
     socketRef.current = io('http://localhost:3001');
-    
+
     // Handle incoming message streams
     socketRef.current.on('message-chunk', (chunk: string) => {
       setMessages(prevMessages => {
         const newMessages = [...prevMessages];
         const lastMessage = newMessages[newMessages.length - 1];
-        
+
         if (lastMessage && lastMessage.role === 'assistant') {
-          // Обновляем существующее сообщение
+          // Append to existing message
           const updatedMessage: Message = {
             ...lastMessage,
             content: lastMessage.content + chunk
           };
           newMessages[newMessages.length - 1] = updatedMessage;
-          
-          // Ключевой момент: обновляем сессию с каждым чанком
-          // Это обеспечит, что текст ответа ИИ будет сохранен в localStorage
-          const storedSessions = JSON.parse(localStorage.getItem('chatSessions') || '[]');
-          const updatedSessions = storedSessions.map((session: ChatSession) => {
-            if (session.id === currentSessionId) {
-              // Находим то же сообщение в сессии по ID
-              const sessionMessages = [...session.messages];
-              const messageIndex = sessionMessages.findIndex(msg => msg.id === lastMessage.id);
-              
-              // Если сообщение найдено, обновляем его
-              if (messageIndex !== -1) {
-                sessionMessages[messageIndex] = updatedMessage;
-              } else {
-                // Если сообщение не найдено, добавляем его
-                sessionMessages.push(updatedMessage);
-              }
-              
-              return {
-                ...session,
-                messages: sessionMessages,
-                updatedAt: new Date()
-              };
-            }
-            return session;
-          });
-          
-          // Сохраняем обновленные сессии в localStorage
-          localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
-          // Также обновляем состояние сессий в компоненте
-          setSessions(updatedSessions);
+
+          // Обновляем сессию с каждым чанком
+          updateSessionWithMessage(updatedMessage);
+
+          return newMessages;
+        } else {
+          // Create new message
+          const newAssistantMessage: Message = {
+            id: uuidv4(),
+            role: 'assistant',
+            content: chunk,
+            timestamp: new Date()
+          };
+          newMessages.push(newAssistantMessage);
+
+          // Обновляем сессию с новым сообщением
+          updateSessionWithMessage(newAssistantMessage);
+
+          return newMessages;
         }
-        
-        return newMessages;
       });
     });
-    
-    
-    // Обработчик message-complete
+
     socketRef.current.on('message-complete', () => {
       setIsLoading(false);
-      // Больше ничего тут не делаем, так как обновление сессии происходит в message-chunk
     });
-    
+
     socketRef.current.on('error', (errorMsg: string) => {
       setError(errorMsg);
       setIsLoading(false);
     });
-    
+
     // Load sessions from local storage
     const savedSessions = localStorage.getItem('chatSessions');
     if (savedSessions) {
       setSessions(JSON.parse(savedSessions));
     }
-    
+
     return () => {
       socketRef.current?.disconnect();
     };
   }, []);
-  
+
+  // Helper function to update session with message
+  const updateSessionWithMessage = (message: Message) => {
+    setSessions(prevSessions => {
+      const updatedSessions = prevSessions.map(session => {
+        if (session.id === currentSessionId) {
+          // Найдем сообщение в сессии по его id
+          const messageIndex = session.messages.findIndex(msg => msg.id === message.id);
+
+          if (messageIndex !== -1) {
+            // Если сообщение существует, обновим его
+            const updatedMessages = [...session.messages];
+            updatedMessages[messageIndex] = message;
+
+            return {
+              ...session,
+              messages: updatedMessages,
+              updatedAt: new Date()
+            };
+          } else {
+            // Если сообщения нет, добавим его
+            return {
+              ...session,
+              messages: [...session.messages, message],
+              updatedAt: new Date()
+            };
+          }
+        }
+        return session;
+      });
+
+      // Сохраняем обновленные сессии в localStorage
+      localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+
+      return updatedSessions;
+    });
+  };
+
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-  
+
   // Save sessions to local storage
   useEffect(() => {
     if (sessions.length > 0) {
       localStorage.setItem('chatSessions', JSON.stringify(sessions));
     }
   }, [sessions]);
-  
+
+  // В функции sendMessage добавим проверку на isLoading
   const sendMessage = async (content: string) => {
     if (!content.trim() && attachments.length === 0) return;
     
-    // Add user message to state
+    // Если уже идет генерация, сначала останавливаем ее
+    if (isLoading) {
+      stopGeneration();
+      
+      // Небольшая задержка, чтобы сервер успел обработать остановку
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
+    // Создаем сообщение пользователя
     const userMessage: Message = {
       id: uuidv4(),
       role: 'user',
@@ -120,7 +149,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       timestamp: new Date()
     };
     
-    // Создаем пустое сообщение ассистента сразу
+    // Создаем пустое сообщение ассистента
     const emptyAssistantMessage: Message = {
       id: uuidv4(),
       role: 'assistant',
@@ -128,35 +157,45 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       timestamp: new Date()
     };
     
-    // Добавляем оба сообщения в локальное состояние
-    setMessages(prev => [...prev, userMessage, emptyAssistantMessage]);
+    // Обновляем локальный массив сообщений
+    setMessages(prev => {
+      // Проверяем, есть ли в конце пустое сообщение ассистента
+      const lastMessage = prev[prev.length - 1];
+      if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content === '') {
+        // Если есть, заменяем его на новую пару сообщений
+        return [...prev.slice(0, -1), userMessage, emptyAssistantMessage];
+      }
+      // Иначе просто добавляем новые сообщения
+      return [...prev, userMessage, emptyAssistantMessage];
+    });
+    
     setIsLoading(true);
     setError(null);
     
     try {
-      // Prepare history for the API
+      // Подготавливаем историю сообщений для API
       const messageHistory = messages.map(msg => ({
         role: msg.role,
         content: msg.content
       }));
       
-      // Add new user message to history
+      // Добавляем новое сообщение пользователя
       messageHistory.push({
         role: 'user',
         content
       });
       
-      // Send message via Socket.IO
+      // Отправляем сообщение через Socket.IO
       socketRef.current?.emit('chat-message', {
         sessionId: currentSessionId,
         messages: messageHistory,
         attachments
       });
       
-      // Clear attachments after sending
+      // Очищаем вложения после отправки
       setAttachments([]);
       
-      // Update or create session - ВАЖНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ
+      // Обновляем или создаем сессию
       const sessionExists = sessions.some(session => session.id === currentSessionId);
       if (sessionExists) {
         setSessions(prevSessions => 
@@ -164,10 +203,11 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
             session.id === currentSessionId 
               ? { 
                   ...session, 
-                  // Добавляем ОБОИХ сообщений - пользователя и пустое сообщение ассистента
-                  messages: [...session.messages, userMessage, emptyAssistantMessage], 
+                  messages: [...session.messages.filter(msg => 
+                    // Удаляем все пустые сообщения ассистента перед добавлением новых
+                    !(msg.role === 'assistant' && msg.content === '')
+                  ), userMessage, emptyAssistantMessage], 
                   updatedAt: new Date(),
-                  // Обновляем заголовок сессии
                   title: content.slice(0, 30) + (content.length > 30 ? '...' : '')
                 }
               : session
@@ -177,42 +217,82 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         const newSession: ChatSession = {
           id: currentSessionId,
           title: content.slice(0, 30) + (content.length > 30 ? '...' : ''),
-          // Включаем оба сообщения в новую сессию
           messages: [userMessage, emptyAssistantMessage],
           createdAt: new Date(),
           updatedAt: new Date()
         };
         setSessions(prev => [...prev, newSession]);
       }
+      
+      // Сохраняем сессии в localStorage после обновления
+      setTimeout(() => {
+        localStorage.setItem('chatSessions', JSON.stringify(sessions));
+      }, 100);
+      
     } catch (err) {
       setError('Failed to send message. Please try again.');
       setIsLoading(false);
+      
+      // Удаляем пустое сообщение ассистента при ошибке
+      setMessages(prev => prev.filter(msg => 
+        !(msg.id === emptyAssistantMessage.id && msg.content === '')
+      ));
     }
   };
-  
+
+  // Остановка генерации ответа
+  const stopGeneration = () => {
+    if (socketRef.current && isLoading) {
+      // Отправляем событие остановки генерации на сервер
+      socketRef.current.emit('stop-generation', { sessionId: currentSessionId });
+
+      // Добавляем примечание к последнему сообщению
+      setMessages(prev => {
+        const lastMessage = prev[prev.length - 1];
+        if (lastMessage && lastMessage.role === 'assistant') {
+          const updatedMessage = {
+            ...lastMessage,
+            content: lastMessage.content + "\n\n*Генерация была остановлена*"
+          };
+
+          // Обновляем сессию с этим сообщением
+          updateSessionWithMessage(updatedMessage);
+
+          return [...prev.slice(0, -1), updatedMessage];
+        }
+        return prev;
+      });
+    }
+  };
+
   const startNewChat = () => {
-    // Создаем новый ID сессии
+    // Если идет генерация, остановим ее
+    if (isLoading) {
+      stopGeneration();
+    }
+
     const newSessionId = uuidv4();
-    
-    // Сохраняем все текущие сообщения в текущую сессию перед переключением
+
+    // Сохраняем текущую сессию перед созданием новой
     if (currentSessionId && messages.length > 0) {
-      setSessions(prevSessions => 
-        prevSessions.map(session => 
-          session.id === currentSessionId 
+      setSessions(prevSessions => {
+        const updatedSessions = prevSessions.map(session =>
+          session.id === currentSessionId
             ? { ...session, messages: [...messages], updatedAt: new Date() }
             : session
-        )
-      );
+        );
+
+        localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+        return updatedSessions;
+      });
     }
-    
-    // Очищаем сообщения и вложения
+
+    // Устанавливаем новую сессию
+    setCurrentSessionId(newSessionId);
     setMessages([]);
     setAttachments([]);
-    
-    // Устанавливаем новый ID сессии
-    setCurrentSessionId(newSessionId);
-    
-    // Создаем новую пустую сессию
+
+    // Создаем новую сессию
     const newSession: ChatSession = {
       id: newSessionId,
       title: 'New chat',
@@ -220,45 +300,55 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       createdAt: new Date(),
       updatedAt: new Date()
     };
-    
-    // Добавляем новую сессию
+
     setSessions(prev => [...prev, newSession]);
+
+    // Уведомляем сервер о смене сессии
+    if (socketRef.current) {
+      socketRef.current.emit('change-session', { sessionId: newSessionId });
+    }
   };
-  
+
   const loadSession = (sessionId: string) => {
+    // Если идет генерация, остановим ее
+    if (isLoading) {
+      stopGeneration();
+    }
+
     // Сохраняем текущую сессию перед переключением
     if (currentSessionId && messages.length > 0) {
       setSessions(prevSessions => {
-        const updatedSessions = prevSessions.map(session => 
-          session.id === currentSessionId 
+        const updatedSessions = prevSessions.map(session =>
+          session.id === currentSessionId
             ? { ...session, messages: [...messages], updatedAt: new Date() }
             : session
         );
-        
-        // Обновляем localStorage
+
         localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
-        
         return updatedSessions;
       });
     }
-    
-    // Теперь загружаем сессию напрямую из localStorage для надежности
-    const storedSessions = JSON.parse(localStorage.getItem('chatSessions') || '[]');
-    const sessionToLoad = storedSessions.find((s: ChatSession) => s.id === sessionId);
-    
-    if (sessionToLoad) {
+
+    // Загружаем выбранную сессию
+    const session = sessions.find(s => s.id === sessionId);
+    if (session) {
       setCurrentSessionId(sessionId);
-      setMessages([...sessionToLoad.messages]); // Используем spread для создания новой копии
+      setMessages([...session.messages]);
+
+      // Уведомляем сервер о смене сессии
+      if (socketRef.current) {
+        socketRef.current.emit('change-session', { sessionId });
+      }
     }
   };
-  
+
   const handleFileUpload = (files: File[]) => {
     // Process files
     Array.from(files).forEach(async file => {
       // For text files, read content
-      if (file.type.startsWith('text/') || 
-          file.type === 'application/json' || 
-          file.type === 'application/xml') {
+      if (file.type.startsWith('text/') ||
+        file.type === 'application/json' ||
+        file.type === 'application/xml') {
         const reader = new FileReader();
         reader.onload = (e) => {
           const content = e.target?.result as string;
@@ -288,7 +378,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       }
     });
   };
-  
+
   const removeAttachment = (id: string) => {
     setAttachments(prevAttachments => prevAttachments.filter(file => file.id !== id));
   };
@@ -307,33 +397,41 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
           createdAt: new Date(),
           updatedAt: new Date()
         };
-        
+
         // Если удаляем текущую сессию, переключаемся на новую
         if (sessionId === currentSessionId) {
           setCurrentSessionId(newSessionId);
           setMessages([]);
+
+          // Уведомляем сервер о смене сессии
+          if (socketRef.current) {
+            socketRef.current.emit('change-session', { sessionId: newSessionId });
+          }
         }
-        
+
         // Возвращаем новый массив с новой сессией, без удаляемой
         return [newSession, ...prevSessions.filter(session => session.id !== sessionId)];
       }
-      
+
       // Если не последний чат, просто удаляем
       const filteredSessions = prevSessions.filter(session => session.id !== sessionId);
-      
+
       // Если удаляем текущую сессию, переключаемся на первую доступную
       if (sessionId === currentSessionId && filteredSessions.length > 0) {
         const newCurrentSession = filteredSessions[0];
         setCurrentSessionId(newCurrentSession.id);
         setMessages([...newCurrentSession.messages]);
+
+        // Уведомляем сервер о смене сессии
+        if (socketRef.current) {
+          socketRef.current.emit('change-session', { sessionId: newCurrentSession.id });
+        }
       }
-      
+
       return filteredSessions;
     });
   };
-  
-  
-  // Убедитесь, что эта функция всегда возвращается из хука
+
   return {
     messages,
     isLoading,
@@ -346,7 +444,8 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     loadSession,
     handleFileUpload,
     removeAttachment,
-    deleteChat, // Новая функция
+    deleteChat,
+    stopGeneration,
     messagesEndRef
   };
 };

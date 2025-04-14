@@ -1,7 +1,7 @@
 // src/components/Chat.tsx
 import React, { useState, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { PaperAirplaneIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/solid';
+import { PaperAirplaneIcon, PlusIcon, TrashIcon, StopIcon } from '@heroicons/react/24/solid';
 import ChatMessage from './ChatMessage';
 import FileUpload from './FileUpload';
 import ModelSelector from './ModelSelector';
@@ -30,7 +30,8 @@ const Chat: React.FC = () => {
     loadSession,
     handleFileUpload,
     removeAttachment,
-    deleteChat, // Добавляем эту функцию
+    deleteChat,
+    stopGeneration,
     messagesEndRef
   } = useChat();
 
@@ -49,6 +50,14 @@ const Chat: React.FC = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Если идет загрузка, останавливаем генерацию
+    if (isLoading) {
+      stopGeneration();
+      return;
+    }
+
+    // Иначе отправляем сообщение
     if (input.trim() || attachments.length > 0) {
       sendMessage(input);
       setInput('');
@@ -85,52 +94,51 @@ const Chat: React.FC = () => {
   return (
     <div className="flex h-full bg-chat-bg text-white">
       {/* Sidebar */}
-{showSidebar && (
-  <div className="w-64 bg-brand-dark-green flex flex-col">
-    <div className="p-4">
-      <button
-        onClick={startNewChat}
-        className="w-full flex items-center justify-center gap-2 border border-white/30 rounded-md py-2 bg-green-700/50 hover:bg-green-700 text-white"
-      >
-        <PlusIcon className="h-4 w-4" />
-        <span>New chat</span>
-      </button>
-    </div>
-    
-    <div className="flex-1 overflow-y-auto p-2">
-      <div className="space-y-2">
-        {sessions.slice().reverse().map((session) => (
-          <div
-            key={session.id}
-            className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-green-700 ${
-              session.id === currentSessionId ? 'bg-green-700' : ''
-            }`}
-          >
+      {showSidebar && (
+        <div className="w-64 bg-brand-dark-green flex flex-col">
+          <div className="p-4">
             <button
-              onClick={() => loadSession(session.id)}
-              className="flex-1 text-left truncate text-sm text-white"
+              onClick={startNewChat}
+              className="w-full flex items-center justify-center gap-2 border border-white/30 rounded-md py-2 bg-green-700/50 hover:bg-green-700 text-white"
             >
-              {getChatTitle(session.id)}
-            </button>
-            
-            {/* Кнопка удаления */}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                if (window.confirm('Вы уверены, что хотите удалить этот чат?')) {
-                  deleteChat(session.id);
-                }
-              }}
-              className="text-white/70 hover:text-red-300"
-            >
-              <TrashIcon className="h-4 w-4" />
+              <PlusIcon className="h-4 w-4" />
+              <span>New chat</span>
             </button>
           </div>
-        ))}
-      </div>
-    </div>
-  </div>
-)}
+
+          <div className="flex-1 overflow-y-auto p-2">
+            <div className="space-y-2">
+              {sessions.slice().reverse().map((session) => (
+                <div
+                  key={session.id}
+                  className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-green-700 ${session.id === currentSessionId ? 'bg-green-700' : ''
+                    }`}
+                >
+                  <button
+                    onClick={() => loadSession(session.id)}
+                    className="flex-1 text-left truncate text-sm text-white"
+                  >
+                    {getChatTitle(session.id)}
+                  </button>
+
+                  {/* Кнопка удаления */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (window.confirm('Вы уверены, что хотите удалить этот чат?')) {
+                        deleteChat(session.id);
+                      }
+                    }}
+                    className="text-white/70 hover:text-red-300"
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main content */}
       <div className="flex-1 flex flex-col">
@@ -183,6 +191,7 @@ const Chat: React.FC = () => {
           {isLoading && (
             <div className="py-4 px-4 flex justify-center">
               <div className="dot-typing"></div>
+              {/* Удаляем кнопку остановки отсюда */}
             </div>
           )}
 
@@ -229,10 +238,17 @@ const Chat: React.FC = () => {
             />
             <button
               type="submit"
-              className="absolute right-2 bottom-2.5 rounded-md p-1.5 text-gray-400 hover:bg-gray-700 hover:text-white transition-colors"
-              disabled={isLoading || (!input.trim() && attachments.length === 0)}
+              className={`absolute right-2 bottom-2.5 rounded-md p-1.5 transition-colors ${isLoading
+                ? 'bg-red-600 hover:bg-red-700 text-white'
+                : 'text-gray-400 hover:bg-gray-700 hover:text-white'
+                }`}
+              title={isLoading ? "Остановить генерацию" : "Отправить сообщение"}
             >
-              <PaperAirplaneIcon className="h-5 w-5" />
+              {isLoading ? (
+                <StopIcon className="h-5 w-5" />
+              ) : (
+                <PaperAirplaneIcon className="h-5 w-5" />
+              )}
             </button>
           </form>
         </div>
