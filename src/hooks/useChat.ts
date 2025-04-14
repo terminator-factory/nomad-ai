@@ -31,27 +31,54 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         const lastMessage = newMessages[newMessages.length - 1];
         
         if (lastMessage && lastMessage.role === 'assistant') {
-          // Append to existing message
-          newMessages[newMessages.length - 1] = {
+          // Обновляем существующее сообщение
+          const updatedMessage: Message = {
             ...lastMessage,
             content: lastMessage.content + chunk
           };
-        } else {
-          // Create new message
-          newMessages.push({
-            id: uuidv4(),
-            role: 'assistant',
-            content: chunk,
-            timestamp: new Date()
+          newMessages[newMessages.length - 1] = updatedMessage;
+          
+          // Ключевой момент: обновляем сессию с каждым чанком
+          // Это обеспечит, что текст ответа ИИ будет сохранен в localStorage
+          const storedSessions = JSON.parse(localStorage.getItem('chatSessions') || '[]');
+          const updatedSessions = storedSessions.map((session: ChatSession) => {
+            if (session.id === currentSessionId) {
+              // Находим то же сообщение в сессии по ID
+              const sessionMessages = [...session.messages];
+              const messageIndex = sessionMessages.findIndex(msg => msg.id === lastMessage.id);
+              
+              // Если сообщение найдено, обновляем его
+              if (messageIndex !== -1) {
+                sessionMessages[messageIndex] = updatedMessage;
+              } else {
+                // Если сообщение не найдено, добавляем его
+                sessionMessages.push(updatedMessage);
+              }
+              
+              return {
+                ...session,
+                messages: sessionMessages,
+                updatedAt: new Date()
+              };
+            }
+            return session;
           });
+          
+          // Сохраняем обновленные сессии в localStorage
+          localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+          // Также обновляем состояние сессий в компоненте
+          setSessions(updatedSessions);
         }
         
         return newMessages;
       });
     });
     
+    
+    // Обработчик message-complete
     socketRef.current.on('message-complete', () => {
       setIsLoading(false);
+      // Больше ничего тут не делаем, так как обновление сессии происходит в message-chunk
     });
     
     socketRef.current.on('error', (errorMsg: string) => {
@@ -93,7 +120,16 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       timestamp: new Date()
     };
     
-    setMessages(prev => [...prev, userMessage]);
+    // Создаем пустое сообщение ассистента сразу
+    const emptyAssistantMessage: Message = {
+      id: uuidv4(),
+      role: 'assistant',
+      content: '',
+      timestamp: new Date()
+    };
+    
+    // Добавляем оба сообщения в локальное состояние
+    setMessages(prev => [...prev, userMessage, emptyAssistantMessage]);
     setIsLoading(true);
     setError(null);
     
@@ -104,22 +140,11 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         content: msg.content
       }));
       
-      // Add new user message
+      // Add new user message to history
       messageHistory.push({
         role: 'user',
         content
       });
-      
-      // Add empty assistant message that will be filled with streaming content
-      setMessages(prev => [
-        ...prev,
-        {
-          id: uuidv4(),
-          role: 'assistant',
-          content: '',
-          timestamp: new Date()
-        }
-      ]);
       
       // Send message via Socket.IO
       socketRef.current?.emit('chat-message', {
@@ -131,13 +156,20 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       // Clear attachments after sending
       setAttachments([]);
       
-      // Update or create session
+      // Update or create session - ВАЖНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ
       const sessionExists = sessions.some(session => session.id === currentSessionId);
       if (sessionExists) {
         setSessions(prevSessions => 
           prevSessions.map(session => 
             session.id === currentSessionId 
-              ? { ...session, messages: [...session.messages, userMessage], updatedAt: new Date() }
+              ? { 
+                  ...session, 
+                  // Добавляем ОБОИХ сообщений - пользователя и пустое сообщение ассистента
+                  messages: [...session.messages, userMessage, emptyAssistantMessage], 
+                  updatedAt: new Date(),
+                  // Обновляем заголовок сессии
+                  title: content.slice(0, 30) + (content.length > 30 ? '...' : '')
+                }
               : session
           )
         );
@@ -145,7 +177,8 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         const newSession: ChatSession = {
           id: currentSessionId,
           title: content.slice(0, 30) + (content.length > 30 ? '...' : ''),
-          messages: [userMessage],
+          // Включаем оба сообщения в новую сессию
+          messages: [userMessage, emptyAssistantMessage],
           createdAt: new Date(),
           updatedAt: new Date()
         };
@@ -158,17 +191,64 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   };
   
   const startNewChat = () => {
+    // Создаем новый ID сессии
     const newSessionId = uuidv4();
-    setCurrentSessionId(newSessionId);
+    
+    // Сохраняем все текущие сообщения в текущую сессию перед переключением
+    if (currentSessionId && messages.length > 0) {
+      setSessions(prevSessions => 
+        prevSessions.map(session => 
+          session.id === currentSessionId 
+            ? { ...session, messages: [...messages], updatedAt: new Date() }
+            : session
+        )
+      );
+    }
+    
+    // Очищаем сообщения и вложения
     setMessages([]);
     setAttachments([]);
+    
+    // Устанавливаем новый ID сессии
+    setCurrentSessionId(newSessionId);
+    
+    // Создаем новую пустую сессию
+    const newSession: ChatSession = {
+      id: newSessionId,
+      title: 'New chat',
+      messages: [],
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    // Добавляем новую сессию
+    setSessions(prev => [...prev, newSession]);
   };
   
   const loadSession = (sessionId: string) => {
-    const session = sessions.find(s => s.id === sessionId);
-    if (session) {
+    // Сохраняем текущую сессию перед переключением
+    if (currentSessionId && messages.length > 0) {
+      setSessions(prevSessions => {
+        const updatedSessions = prevSessions.map(session => 
+          session.id === currentSessionId 
+            ? { ...session, messages: [...messages], updatedAt: new Date() }
+            : session
+        );
+        
+        // Обновляем localStorage
+        localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+        
+        return updatedSessions;
+      });
+    }
+    
+    // Теперь загружаем сессию напрямую из localStorage для надежности
+    const storedSessions = JSON.parse(localStorage.getItem('chatSessions') || '[]');
+    const sessionToLoad = storedSessions.find((s: ChatSession) => s.id === sessionId);
+    
+    if (sessionToLoad) {
       setCurrentSessionId(sessionId);
-      setMessages(session.messages);
+      setMessages([...sessionToLoad.messages]); // Используем spread для создания новой копии
     }
   };
   
@@ -212,6 +292,46 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   const removeAttachment = (id: string) => {
     setAttachments(prevAttachments => prevAttachments.filter(file => file.id !== id));
   };
+
+  const deleteChat = (sessionId: string) => {
+    // Удаляем сессию из списка сессий
+    setSessions(prevSessions => {
+      // Проверяем, не пытаемся ли удалить последний чат
+      if (prevSessions.length <= 1) {
+        // Если это последний чат, создаем новый перед удалением
+        const newSessionId = uuidv4();
+        const newSession: ChatSession = {
+          id: newSessionId,
+          title: 'New chat',
+          messages: [],
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+        
+        // Если удаляем текущую сессию, переключаемся на новую
+        if (sessionId === currentSessionId) {
+          setCurrentSessionId(newSessionId);
+          setMessages([]);
+        }
+        
+        // Возвращаем новый массив с новой сессией, без удаляемой
+        return [newSession, ...prevSessions.filter(session => session.id !== sessionId)];
+      }
+      
+      // Если не последний чат, просто удаляем
+      const filteredSessions = prevSessions.filter(session => session.id !== sessionId);
+      
+      // Если удаляем текущую сессию, переключаемся на первую доступную
+      if (sessionId === currentSessionId && filteredSessions.length > 0) {
+        const newCurrentSession = filteredSessions[0];
+        setCurrentSessionId(newCurrentSession.id);
+        setMessages([...newCurrentSession.messages]);
+      }
+      
+      return filteredSessions;
+    });
+  };
+  
   
   // Убедитесь, что эта функция всегда возвращается из хука
   return {
@@ -225,7 +345,8 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     startNewChat,
     loadSession,
     handleFileUpload,
-    removeAttachment, // Эта функция всегда должна быть здесь
+    removeAttachment,
+    deleteChat, // Новая функция
     messagesEndRef
   };
 };

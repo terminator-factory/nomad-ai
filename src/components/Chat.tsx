@@ -1,7 +1,7 @@
 // src/components/Chat.tsx
 import React, { useState, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { PaperAirplaneIcon, PlusIcon } from '@heroicons/react/24/solid';
+import { PaperAirplaneIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/solid';
 import ChatMessage from './ChatMessage';
 import FileUpload from './FileUpload';
 import ModelSelector from './ModelSelector';
@@ -18,34 +18,35 @@ const models = [
 ];
 
 const Chat: React.FC = () => {
-    const {
-        messages,
-        isLoading,
-        error,
-        currentSessionId,
-        sessions,
-        attachments,
-        sendMessage,
-        startNewChat,
-        loadSession,
-        handleFileUpload,
-        removeAttachment, // Добавляем эту функцию
-        messagesEndRef
-      } = useChat();
-  
+  const {
+    messages,
+    isLoading,
+    error,
+    currentSessionId,
+    sessions,
+    attachments,
+    sendMessage,
+    startNewChat,
+    loadSession,
+    handleFileUpload,
+    removeAttachment,
+    deleteChat, // Добавляем эту функцию
+    messagesEndRef
+  } = useChat();
+
   const [input, setInput] = useState('');
   const [selectedModel, setSelectedModel] = useState(models[0].id);
   const [showSidebar, setShowSidebar] = useState(window.innerWidth >= 768);
-  
+
   useEffect(() => {
     const handleResize = () => {
       setShowSidebar(window.innerWidth >= 768);
     };
-    
+
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
-  
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim() || attachments.length > 0) {
@@ -53,7 +54,7 @@ const Chat: React.FC = () => {
       setInput('');
     }
   };
-  
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -71,16 +72,16 @@ const Chat: React.FC = () => {
   const getChatTitle = (sessionId: string) => {
     const session = sessions.find(s => s.id === sessionId);
     if (!session) return 'New chat';
-    
+
     const firstUserMessage = session.messages.find(m => m.role === 'user');
     if (!firstUserMessage) return 'New chat';
-    
+
     const title = firstUserMessage.content.slice(0, 30);
-    return title.length < firstUserMessage.content.length 
-      ? title + '...' 
+    return title.length < firstUserMessage.content.length
+      ? title + '...'
       : title;
   };
-  
+
   return (
     <div className="flex h-screen bg-chat-bg text-white">
       {/* Sidebar */}
@@ -95,25 +96,41 @@ const Chat: React.FC = () => {
               <span>New chat</span>
             </button>
           </div>
-          
+
           <div className="flex-1 overflow-y-auto p-2">
             <div className="space-y-2">
               {sessions.slice().reverse().map((session) => (
-                <button
+                <div
                   key={session.id}
-                  onClick={() => loadSession(session.id)}
-                  className={`w-full text-left p-2 rounded-md hover:bg-gray-800 ${
-                    session.id === currentSessionId ? 'bg-gray-800' : ''
-                  }`}
+                  className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-gray-800 ${session.id === currentSessionId ? 'bg-gray-800' : ''
+                    }`}
                 >
-                  <div className="truncate text-sm">{getChatTitle(session.id)}</div>
-                </button>
+                  <button
+                    onClick={() => loadSession(session.id)}
+                    className="flex-1 text-left truncate text-sm"
+                  >
+                    {getChatTitle(session.id)}
+                  </button>
+
+                  {/* Кнопка удаления */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation(); // Предотвращаем загрузку сессии при клике на кнопку удаления
+                      if (window.confirm('Вы уверены, что хотите удалить этот чат?')) {
+                        deleteChat(session.id);
+                      }
+                    }}
+                    className="text-gray-400 hover:text-red-500"
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                  </button>
+                </div>
               ))}
             </div>
           </div>
         </div>
       )}
-      
+
       {/* Main content */}
       <div className="flex-1 flex flex-col">
         {/* Chat header */}
@@ -139,12 +156,12 @@ const Chat: React.FC = () => {
               </svg>
             </button>
           )}
-          
+
           <div className="font-medium">
             {currentSessionId ? getChatTitle(currentSessionId) : 'New chat'}
           </div>
         </div>
-        
+
         {/* Chat messages */}
         <div className="flex-1 overflow-y-auto">
           {messages.length === 0 && (
@@ -157,17 +174,17 @@ const Chat: React.FC = () => {
               </div>
             </div>
           )}
-          
+
           {messages.map((message) => (
             <ChatMessage key={message.id} message={message} />
           ))}
-          
+
           {isLoading && (
             <div className="py-4 px-4 flex justify-center">
               <div className="dot-typing"></div>
             </div>
           )}
-          
+
           {error && (
             <div className="py-4 px-4">
               <div className="bg-red-900/50 border border-red-700 rounded-md p-3 text-sm">
@@ -175,10 +192,10 @@ const Chat: React.FC = () => {
               </div>
             </div>
           )}
-          
+
           <div ref={messagesEndRef}></div>
         </div>
-        
+
         {/* Input area */}
         <div className="border-t border-gray-700 p-4">
           {/* Model selector */}
@@ -189,7 +206,7 @@ const Chat: React.FC = () => {
               onModelSelect={setSelectedModel}
             />
           </div>
-          
+
           {/* File upload */}
           <div className="mb-3">
             <FileUpload
@@ -198,7 +215,7 @@ const Chat: React.FC = () => {
               onRemoveAttachment={handleRemoveAttachment}
             />
           </div>
-          
+
           <form onSubmit={handleSubmit} className="relative">
             <TextareaAutosize
               value={input}
