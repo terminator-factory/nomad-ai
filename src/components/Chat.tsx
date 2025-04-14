@@ -11,7 +11,7 @@ import { FileAttachment } from '../types';
 const models = [
   {
     id: 'gemma3:4b',
-    name: 'Gemma 3 4B',
+    name: 'BCC-AI-Model',
     description: 'Быстрая модель для общих задач'
   },
   // Другие модели можно добавить здесь
@@ -83,53 +83,54 @@ const Chat: React.FC = () => {
   };
 
   return (
-    <div className="flex h-screen bg-chat-bg text-white">
+    <div className="flex h-full bg-chat-bg text-white">
       {/* Sidebar */}
-      {showSidebar && (
-        <div className="w-64 bg-gray-900 flex flex-col">
-          <div className="p-4">
+{showSidebar && (
+  <div className="w-64 bg-brand-dark-green flex flex-col">
+    <div className="p-4">
+      <button
+        onClick={startNewChat}
+        className="w-full flex items-center justify-center gap-2 border border-white/30 rounded-md py-2 bg-green-700/50 hover:bg-green-700 text-white"
+      >
+        <PlusIcon className="h-4 w-4" />
+        <span>New chat</span>
+      </button>
+    </div>
+    
+    <div className="flex-1 overflow-y-auto p-2">
+      <div className="space-y-2">
+        {sessions.slice().reverse().map((session) => (
+          <div
+            key={session.id}
+            className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-green-700 ${
+              session.id === currentSessionId ? 'bg-green-700' : ''
+            }`}
+          >
             <button
-              onClick={startNewChat}
-              className="w-full flex items-center justify-center gap-2 border border-gray-700 rounded-md py-2 hover:bg-gray-800"
+              onClick={() => loadSession(session.id)}
+              className="flex-1 text-left truncate text-sm text-white"
             >
-              <PlusIcon className="h-4 w-4" />
-              <span>New chat</span>
+              {getChatTitle(session.id)}
+            </button>
+            
+            {/* Кнопка удаления */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (window.confirm('Вы уверены, что хотите удалить этот чат?')) {
+                  deleteChat(session.id);
+                }
+              }}
+              className="text-white/70 hover:text-red-300"
+            >
+              <TrashIcon className="h-4 w-4" />
             </button>
           </div>
-
-          <div className="flex-1 overflow-y-auto p-2">
-            <div className="space-y-2">
-              {sessions.slice().reverse().map((session) => (
-                <div
-                  key={session.id}
-                  className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-gray-800 ${session.id === currentSessionId ? 'bg-gray-800' : ''
-                    }`}
-                >
-                  <button
-                    onClick={() => loadSession(session.id)}
-                    className="flex-1 text-left truncate text-sm"
-                  >
-                    {getChatTitle(session.id)}
-                  </button>
-
-                  {/* Кнопка удаления */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation(); // Предотвращаем загрузку сессии при клике на кнопку удаления
-                      if (window.confirm('Вы уверены, что хотите удалить этот чат?')) {
-                        deleteChat(session.id);
-                      }
-                    }}
-                    className="text-gray-400 hover:text-red-500"
-                  >
-                    <TrashIcon className="h-4 w-4" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+        ))}
+      </div>
+    </div>
+  </div>
+)}
 
       {/* Main content */}
       <div className="flex-1 flex flex-col">

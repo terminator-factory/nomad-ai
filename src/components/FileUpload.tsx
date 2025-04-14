@@ -43,7 +43,7 @@ const FileUpload: React.FC<FileUploadProps> = ({
           className="flex items-center text-gray-400 hover:text-white"
         >
           <PaperClipIcon className="w-5 h-5" />
-          <span className="ml-1 text-sm">Attach files</span>
+          <span className="ml-1 text-sm">Загрузить файл</span>
         </button>
         <input
           type="file"
