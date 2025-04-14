@@ -12,23 +12,34 @@ interface ChatMessageProps {
 const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
   const isUser = message.role === 'user';
   
-  // Код для подсветки синтаксиса при монтировании компонента
+  // Добавляем задержку перед подсветкой при изменении контента
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      document.querySelectorAll('pre code').forEach((el) => {
+        hljs.highlightElement(el as HTMLElement);
+      });
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, [message.content]);
+  
+  // Дополнительный эффект для подсветки при монтировании компонента
   React.useEffect(() => {
     document.querySelectorAll('pre code').forEach((el) => {
       hljs.highlightElement(el as HTMLElement);
     });
-  }, [message.content]);
+  }, []);
   
   return (
     <div className={`py-5 ${isUser ? 'bg-user-message' : 'bg-bot-message'}`}>
       <div className="max-w-3xl mx-auto px-4 flex">
         <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isUser ? 'bg-blue-500' : 'bg-green-500'}`}>
-          {isUser ? 'Вы' : 'ИИ'}
+          {isUser ? 'В' : 'ИИ'}
         </div>
         
         <div className="ml-4 flex-1">
           <div className="font-medium text-white">
-            {isUser ? 'Вы' : 'БОТаник'}
+            {isUser ? 'Вы' : 'ИИ'}
           </div>
           
           <div className="mt-1 prose prose-invert">
