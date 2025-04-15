@@ -2,12 +2,14 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Копируем package.json и устанавливаем зависимости
+# Копируем package.json из корня проекта
 COPY package*.json ./
+
+# Устанавливаем зависимости
 RUN npm install
 
-# Копируем исходный код
-COPY . .
+# Копируем серверную часть проекта (без .env)
+COPY server ./server
 
 # Экспортируем порт и запускаем сервер
 EXPOSE 3001

@@ -1,38 +1,35 @@
 # docker-compose.yml
+version: '3.8'
+
 services:
   client:
     build:
       context: .
-      # Используем существующий Dockerfile клиента в корне проекта
       dockerfile: Dockerfile
     ports:
-      - "80:80"
+      - "9090:80"  # Изменен на порт 9090 снаружи
     depends_on:
       - server
+    environment:
+      - REACT_APP_SOCKET_URL=http://localhost:3001
+    networks:
+      - app-network
 
   server:
     build:
-      # Указываем правильный путь к директории сервера
-      context: ./server
-      # Используем существующий Dockerfile сервера
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: server/Dockerfile
     ports:
       - "3001:3001"
     environment:
       - PORT=3001
-      # Замените container_name на имя существующего контейнера с моделью
       - LLM_API_URL=http://host.docker.internal:11434/api/generate
+      - UI_URL=http://localhost:9090  # Также обновлено на 9090
     volumes:
       - ./server/uploads:/app/server/uploads
-    # Добавляем сеть, в которой работает контейнер с LLM
     networks:
-      - default
-      - llm-network
+      - app-network
 
 networks:
-  default:
-  # Подключаемся к существующей внешней сети, где запущена модель
-  llm-network:
-    external: true
-    # Укажите имя существующей сети Docker, где работает контейнер с моделью
-    name: existing_network_name
+  app-network:
+    driver: bridge

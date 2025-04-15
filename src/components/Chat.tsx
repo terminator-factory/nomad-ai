@@ -11,7 +11,7 @@ import { FileAttachment } from '../types';
 const models = [
   {
     id: 'gemma3:4b',
-    name: 'BCC-AI-Model',
+    name: 'Zhake',
     description: 'Быстрая модель для общих задач'
   },
   // Другие модели можно добавить здесь
