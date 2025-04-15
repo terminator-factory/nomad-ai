@@ -1,0 +1,38 @@
+# docker-compose.yml
+services:
+  client:
+    build:
+      context: .
+      # Используем существующий Dockerfile клиента в корне проекта
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - server
+
+  server:
+    build:
+      # Указываем правильный путь к директории сервера
+      context: ./server
+      # Используем существующий Dockerfile сервера
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      # Замените container_name на имя существующего контейнера с моделью
+      - LLM_API_URL=http://host.docker.internal:11434/api/generate
+    volumes:
+      - ./server/uploads:/app/server/uploads
+    # Добавляем сеть, в которой работает контейнер с LLM
+    networks:
+      - default
+      - llm-network
+
+networks:
+  default:
+  # Подключаемся к существующей внешней сети, где запущена модель
+  llm-network:
+    external: true
+    # Укажите имя существующей сети Docker, где работает контейнер с моделью
+    name: existing_network_name

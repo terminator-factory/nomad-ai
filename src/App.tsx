@@ -6,7 +6,7 @@ import './App.css';
 
 const App: React.FC = () => {
   // Здесь можно добавить URL на главную страницу вашего основного проекта
-  const homeUrl = 'https://example.com';
+  const homeUrl = 'http://localhost:8080/ui/';
   
   return (
     <div className="App flex flex-col h-screen">
