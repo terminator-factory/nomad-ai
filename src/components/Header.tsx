@@ -23,7 +23,7 @@ const Header: React.FC<HeaderProps> = ({ homeUrl = '/' }) => {
         
         {/* Центральная часть - название */}
         <div className="w-1/3 flex justify-center">
-          <h1 className="text-2xl font-bold text-white">БОТаник</h1>
+          <h1 className="text-2xl font-bold text-white">NoMadAI</h1>
         </div>
         
         {/* Правая часть - пустая для симметрии */}
