@@ -11,7 +11,7 @@ import { FileAttachment } from '../types';
 const models = [
   {
     id: 'gemma3:4b',
-    name: 'Zhake',
+    name: 'Zhenis',
     description: 'Быстрая модель для общих задач'
   },
   // Другие модели можно добавить здесь

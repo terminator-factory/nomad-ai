@@ -23,7 +23,7 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - LLM_API_URL=http://host.docker.internal:11434/api/generate
+      - LLM_API_URL=http://host.docker.internal:1134/api/generate
       - UI_URL=http://localhost:9090  # Также обновлено на 9090
     volumes:
       - ./server/uploads:/app/server/uploads
