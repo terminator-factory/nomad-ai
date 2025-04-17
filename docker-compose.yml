@@ -1,13 +1,12 @@
 # docker-compose.yml
-version: '3.8'
-
 services:
   client:
     build:
       context: .
       dockerfile: Dockerfile
+    image: elkazajo/client-client:latest  # Добавлено имя образа
     ports:
-      - "9090:80"  # Изменен на порт 9090 снаружи
+      - "9090:80"
     depends_on:
       - server
     environment:
@@ -19,14 +18,16 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+    image: elkazajo/client-server:latest  # Добавлено имя образа
     ports:
       - "3001:3001"
     environment:
       - PORT=3001
       - LLM_API_URL=http://host.docker.internal:1134/api/generate
-      - UI_URL=http://localhost:9090  # Также обновлено на 9090
     volumes:
       - ./server/uploads:/app/server/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - app-network
 
