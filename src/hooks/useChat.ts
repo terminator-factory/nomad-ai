@@ -19,10 +19,11 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
   const socketRef = useRef<Socket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://10.15.123.137:3001';
 
   useEffect(() => {
     // Connect to Socket.IO server
-    socketRef.current = io('http://localhost:3001');
+    socketRef.current = io(SOCKET_URL);
 
     // Handle incoming message streams
     socketRef.current.on('message-chunk', (chunk: string) => {

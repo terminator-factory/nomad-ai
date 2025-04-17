@@ -4,13 +4,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: elkazajo/client-client:latest  # Добавлено имя образа
+    image: elkazajo/client-client:latest
     ports:
       - "9090:80"
     depends_on:
       - server
     environment:
-      - REACT_APP_SOCKET_URL=http://localhost:3001
+      - REACT_APP_SOCKET_URL=http://10.15.123.137:3001
     networks:
       - app-network
 
@@ -18,16 +18,16 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
-    image: elkazajo/client-server:latest  # Добавлено имя образа
+    image: elkazajo/client-server:latest
     ports:
       - "3001:3001"
     environment:
       - PORT=3001
-      - LLM_API_URL=http://172.17.0.1:1134/api/generate
+      - LLM_API_URL=http://10.15.123.137:1134/api/generate
     volumes:
       - ./server/uploads:/app/server/uploads
     extra_hosts:
-      - "172.17.0.1:host-gateway"
+      - "host.docker.internal:host-gateway"
     networks:
       - app-network
 

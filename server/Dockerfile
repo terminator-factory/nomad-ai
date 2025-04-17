@@ -1,18 +1,25 @@
-FROM node:18-alpine
+FROM node:23-alpine
 
 WORKDIR /app
 
-# Копируем package.json из корня проекта
+# Copy package.json from project root
 COPY package*.json ./
 
-# Устанавливаем зависимости
+# Install dependencies
 RUN npm install
 
+# Add curl for healthchecks
 RUN apk add --no-cache curl
 
-# Копируем серверную часть проекта (без .env)
+# Copy server code
 COPY server ./server
 
-# Экспортируем порт и запускаем сервер
+# Create uploads directory
+RUN mkdir -p server/uploads
+
+# Add a healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD curl -f http://localhost:3001/api/health || exit 1
+
+# Export port and start server
 EXPOSE 3001
 CMD ["node", "server/src/index.js"]

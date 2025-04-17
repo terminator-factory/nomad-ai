@@ -1,20 +1,24 @@
-FROM node:18-alpine AS build
+FROM node:23-alpine AS build
 
 WORKDIR /app
 
-# Копируем package.json и устанавливаем зависимости
+# Copy package.json and install dependencies
 COPY package*.json ./
 RUN npm install
 
-# Копируем исходный код
+# Copy source code
 COPY . .
 
-# Собираем приложение
+# Build frontend with production environment
 RUN npm run build:frontend
 
-# Настраиваем nginx
+# Set up nginx
 FROM nginx:alpine
 COPY --from=build /app/build /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Add a healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD [ "wget", "-q", "--spider", "http://localhost:80" ]
+
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

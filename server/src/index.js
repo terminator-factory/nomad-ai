@@ -19,13 +19,18 @@ const server = http.createServer(app);
 // Настройка CORS для Socket.IO
 const io = socketIo(server, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
+    origin: ['http://10.15.123.137:9090', 'http://10.15.123.137:3000', 'http://localhost:3000'],
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://10.15.123.137:9090', 'http://10.15.123.137:3000', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
 app.use(express.json());
 app.use(morgan('dev'));
 
