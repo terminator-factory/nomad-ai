@@ -2,7 +2,7 @@
 const axios = require('axios');
 
 // URL для доступа к модели в Docker
-const LLM_API_URL = process.env.LLM_API_URL || 'http://host.docker.internal:1134/api/generate';
+const LLM_API_URL = process.env.LLM_API_URL || 'http://172.17.0.1:1134/api/generate';
 
 /**
  * Форматирует сообщения в формат для запроса к API модели

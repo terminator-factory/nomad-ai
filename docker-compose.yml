@@ -23,11 +23,11 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - LLM_API_URL=http://host.docker.internal:1134/api/generate
+      - LLM_API_URL=http://172.17.0.1:1134/api/generate
     volumes:
       - ./server/uploads:/app/server/uploads
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "172.17.0.1:host-gateway"
     networks:
       - app-network
 

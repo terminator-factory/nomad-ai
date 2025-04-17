@@ -1,4 +1,5 @@
 // server/src/index.js
+const axios = require('axios');
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -65,7 +66,19 @@ app.post('/api/upload', upload.array('files'), (req, res) => {
   res.status(200).json({ files });
 });
 
-// Socket.IO обработка соединений
+
+app.post('/api/tags', async (req, res) => {
+  try {
+    // Извлекаем базовый URL из переменной окружения
+    const baseUrl = process.env.LLM_API_URL.replace('/api/generate', '');
+    const response = await axios.get(`${baseUrl}/api/tags`);
+    res.json(response.data);
+  } catch (error) {
+    console.error('Error proxying /api/tags:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Socket.IO обработка соединений
 io.on('connection', (socket) => {
   console.log('Новое подключение:', socket.id);

@@ -8,6 +8,8 @@ COPY package*.json ./
 # Устанавливаем зависимости
 RUN npm install
 
+RUN apk add --no-cache curl
+
 # Копируем серверную часть проекта (без .env)
 COPY server ./server
 
