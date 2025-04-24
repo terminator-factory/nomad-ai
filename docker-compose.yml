@@ -10,7 +10,7 @@ services:
     depends_on:
       - server
     environment:
-      - REACT_APP_SOCKET_URL=http://10.15.123.137:3001
+      - REACT_APP_SOCKET_URL=http://localhost:3001
     networks:
       - app-network
 
@@ -23,7 +23,7 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - LLM_API_URL=http://10.15.123.137:1134/api/generate
+      - LLM_API_URL=http://localhost:11434/api/generate
     volumes:
       - ./server/uploads:/app/server/uploads
     extra_hosts:

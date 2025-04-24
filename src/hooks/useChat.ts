@@ -2,11 +2,19 @@
 import { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import io, { Socket } from 'socket.io-client';
+import axios from 'axios';
 import { Message, FileAttachment, ChatSession } from '../types';
 
 interface UseChatProps {
   initialMessages?: Message[];
   sessionId?: string;
+}
+
+// Интерфейс для моделей
+interface ModelOption {
+  id: string;
+  name: string;
+  description?: string;
 }
 
 const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = {}) => {
@@ -16,10 +24,14 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   const [currentSessionId, setCurrentSessionId] = useState<string>(sessionId);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
+  
+  // Состояние для моделей
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('gemma3:4b');
 
   const socketRef = useRef<Socket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://10.15.123.137:3001';
+  const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001';
 
   useEffect(() => {
     // Connect to Socket.IO server
@@ -75,11 +87,29 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     if (savedSessions) {
       setSessions(JSON.parse(savedSessions));
     }
+    
+    // Загрузка списка доступных моделей
+    const fetchModels = async () => {
+      try {
+        const response = await axios.get(`${SOCKET_URL}/api/models`);
+        if (response.data && response.data.models) {
+          setModels(response.data.models);
+          // Устанавливаем первую модель по умолчанию, если она есть
+          if (response.data.models.length > 0) {
+            setSelectedModel(response.data.models[0].id);
+          }
+        }
+      } catch (error) {
+        console.error('Ошибка при загрузке списка моделей:', error);
+      }
+    };
+
+    fetchModels();
 
     return () => {
       socketRef.current?.disconnect();
     };
-  }, []);
+  }, [SOCKET_URL]);
 
   // Helper function to update session with message
   const updateSessionWithMessage = (message: Message) => {
@@ -186,11 +216,12 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         content
       });
       
-      // Отправляем сообщение через Socket.IO
+      // Отправляем сообщение через Socket.IO с выбранной моделью
       socketRef.current?.emit('chat-message', {
         sessionId: currentSessionId,
         messages: messageHistory,
-        attachments
+        attachments,
+        model: selectedModel // Добавляем выбранную модель
       });
       
       // Очищаем вложения после отправки
@@ -349,7 +380,10 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       // For text files, read content
       if (file.type.startsWith('text/') ||
         file.type === 'application/json' ||
-        file.type === 'application/xml') {
+        file.type === 'application/xml' ||
+        file.name.toLowerCase().endsWith('.csv') ||
+        file.name.toLowerCase().endsWith('.html') ||
+        file.name.toLowerCase().endsWith('.htm')) {
         const reader = new FileReader();
         reader.onload = (e) => {
           const content = e.target?.result as string;
@@ -358,7 +392,8 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
             {
               id: uuidv4(),
               name: file.name,
-              type: file.type,
+              type: file.type || (file.name.toLowerCase().endsWith('.csv') ? 'text/csv' : 
+                     (file.name.toLowerCase().endsWith('.html') || file.name.toLowerCase().endsWith('.htm')) ? 'text/html' : 'text/plain'),
               size: file.size,
               content
             }
@@ -432,6 +467,12 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       return filteredSessions;
     });
   };
+  
+  // Функция для изменения выбранной модели
+  const changeModel = (modelId: string) => {
+    setSelectedModel(modelId);
+    console.log(`Модель изменена на ${modelId}`);
+  };
 
   return {
     messages,
@@ -440,6 +481,8 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     currentSessionId,
     sessions,
     attachments,
+    models,
+    selectedModel,
     sendMessage,
     startNewChat,
     loadSession,
@@ -447,6 +490,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     removeAttachment,
     deleteChat,
     stopGeneration,
+    changeModel,
     messagesEndRef
   };
 };

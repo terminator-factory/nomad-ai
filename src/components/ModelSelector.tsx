@@ -20,6 +20,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   
+  // Получаем данные выбранной модели
   const selectedModelData = models.find(model => model.id === selectedModel);
   
   return (
@@ -29,7 +30,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
         className="w-full flex items-center justify-between px-3 py-2 border border-gray-700 rounded-md bg-input-bg text-white text-sm"
         onClick={() => setIsOpen(!isOpen)}
       >
-        <span>{selectedModelData?.name || 'Select model'}</span>
+        <span>{selectedModelData?.name || 'Выбрать модель'}</span>
         <svg
           className="h-5 w-5 text-gray-400"
           xmlns="http://www.w3.org/2000/svg"

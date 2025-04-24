@@ -8,15 +8,6 @@ import ModelSelector from './ModelSelector';
 import useChat from '../hooks/useChat';
 import { FileAttachment } from '../types';
 
-const models = [
-  {
-    id: 'gemma3:4b',
-    name: 'Zhenis',
-    description: 'Быстрая модель для общих задач'
-  },
-  // Другие модели можно добавить здесь
-];
-
 const Chat: React.FC = () => {
   const {
     messages,
@@ -25,6 +16,8 @@ const Chat: React.FC = () => {
     currentSessionId,
     sessions,
     attachments,
+    models, // Получаем список моделей из хука
+    selectedModel, // Получаем выбранную модель
     sendMessage,
     startNewChat,
     loadSession,
@@ -32,11 +25,11 @@ const Chat: React.FC = () => {
     removeAttachment,
     deleteChat,
     stopGeneration,
+    changeModel, // Функция для смены модели
     messagesEndRef
   } = useChat();
 
   const [input, setInput] = useState('');
-  const [selectedModel, setSelectedModel] = useState(models[0].id);
   const [showSidebar, setShowSidebar] = useState(window.innerWidth >= 768);
 
   useEffect(() => {
@@ -213,7 +206,7 @@ const Chat: React.FC = () => {
             <ModelSelector
               models={models}
               selectedModel={selectedModel}
-              onModelSelect={setSelectedModel}
+              onModelSelect={changeModel}
             />
           </div>
 

@@ -12,6 +12,9 @@ const { v4: uuidv4 } = require('uuid');
 
 const llmService = require('./services/llm');
 
+// Хранилище данных файлов по сессиям
+const sessionAttachments = new Map();
+
 // Настройка Express
 const app = express();
 const server = http.createServer(app);
@@ -19,7 +22,7 @@ const server = http.createServer(app);
 // Настройка CORS для Socket.IO
 const io = socketIo(server, {
   cors: {
-    origin: ['http://10.15.123.137:9090', 'http://10.15.123.137:3000', 'http://localhost:3000'],
+    origin: ['http://localhost:9090', 'http://localhost:3000', 'http://localhost:3000'],
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -27,7 +30,7 @@ const io = socketIo(server, {
 
 // Middleware
 app.use(cors({
-  origin: ['http://10.15.123.137:9090', 'http://10.15.123.137:3000', 'http://localhost:3000'],
+  origin: ['http://localhost:9090', 'http://localhost:3000', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
@@ -71,6 +74,11 @@ app.post('/api/upload', upload.array('files'), (req, res) => {
   res.status(200).json({ files });
 });
 
+// Маршрут для получения списка доступных моделей
+app.get('/api/models', (req, res) => {
+  const models = llmService.getAvailableModels();
+  res.status(200).json({ models });
+});
 
 app.post('/api/tags', async (req, res) => {
   try {
@@ -94,7 +102,7 @@ io.on('connection', (socket) => {
   let currentSessionId = null;    // ID текущей активной сессии
   
   socket.on('chat-message', async (data) => {
-    const { sessionId, messages, attachments = [] } = data;
+    const { sessionId, messages, attachments = [], model = 'gemma3:4b' } = data;
     
     // Генерируем уникальный ID для этого запроса
     const requestId = uuidv4();
@@ -113,51 +121,119 @@ io.on('connection', (socket) => {
     currentSessionId = sessionId;
     isGenerating = true;
     
-    console.log(`Начало генерации для сессии ${sessionId}, запрос ${requestId}`);
+    console.log(`Начало генерации для сессии ${sessionId}, запрос ${requestId}, модель ${model}`);
+    
+    // Добавляем детальное логирование вложений
+    console.log(`Получено вложений: ${attachments.length}`);
+    
+    // Сохраняем вложения в сессии
+    if (attachments && attachments.length > 0) {
+      sessionAttachments.set(sessionId, [...attachments]);
+      console.log(`Сохранены вложения для сессии ${sessionId}: ${attachments.length} файлов`);
+      
+      attachments.forEach((attachment, index) => {
+        console.log(`Вложение ${index + 1}:`);
+        console.log(`  Имя: ${attachment.name}`);
+        console.log(`  Тип: ${attachment.type}`);
+        console.log(`  Размер: ${attachment.size} байт`);
+        console.log(`  Наличие контента: ${attachment.content ? 'Да' : 'Нет'}`);
+        if (attachment.content) {
+          console.log(`  Длина контента: ${attachment.content.length} символов`);
+          console.log(`  Фрагмент контента: ${attachment.content.substring(0, 50)}...`);
+        }
+        
+        // Проверка на CSV файл
+        const isCSV = attachment.type === 'text/csv' || 
+                     (attachment.name && attachment.name.toLowerCase().endsWith('.csv'));
+        console.log(`  Это CSV файл: ${isCSV}`);
+      });
+    } else if (sessionAttachments.has(sessionId)) {
+      // Если в текущем сообщении нет вложений, но в сессии они были ранее, добавляем их к запросу
+      const savedAttachments = sessionAttachments.get(sessionId);
+      console.log(`Повторно используем вложения из сессии ${sessionId}: ${savedAttachments.length} файлов`);
+      
+      // Используем сохраненные вложения вместо пустого массива
+      processedAttachments = savedAttachments;
+    } else {
+      console.log(`No attachments received`);
+      processedAttachments = [];
+    }
     
     try {
+      // Проверяем, есть ли вложения для обработки
+      let processedAttachments = attachments;
+      
+      // Если нет текущих вложений, но есть сохраненные, используем их
+      if (attachments.length === 0 && sessionAttachments.has(sessionId)) {
+        processedAttachments = sessionAttachments.get(sessionId);
+      }
+      
       // Обработка загруженных файлов (если есть)
-      const processedAttachments = attachments.map(attachment => {
+      processedAttachments = processedAttachments.map(attachment => {
+        // Make sure content is preserved for text files
         if (attachment.content) {
+          console.log(`Processing file: ${attachment.name} (${attachment.type}) - Content length: ${attachment.content.length}`);
+          
+          // Special handling for CSV files to ensure they're properly processed
+          if (attachment.type === 'text/csv' || 
+              (attachment.name && attachment.name.toLowerCase().endsWith('.csv'))) {
+            console.log(`Special processing for CSV file: ${attachment.name}`);
+            
+            // Make sure content is properly formatted if needed
+            // This is just a simple check - you can enhance this based on your needs
+            const content = attachment.content.trim();
+            
+            return {
+              ...attachment,
+              content,
+              type: 'text/csv'  // Ensure type is set correctly
+            };
+          }
+          
           return {
             ...attachment,
             content: attachment.content
           };
         }
+        console.log(`Processing file: ${attachment.name} (${attachment.type}) - No content`);
         return attachment;
       });
       
-      // Стримим ответ от модели
+      // Перед вызовом llmService.streamResponse
+      console.log(`Отправка запроса к ИИ модели с ${processedAttachments.length} вложениями`);
+      
+      // Stream response from model
       await llmService.streamResponse({
         messages,
         attachments: processedAttachments,
+        model: model, // Используем выбранную модель
         onChunk: (chunk) => {
-          // Отправляем чанк только если это текущий запрос и генерация активна
+          // Only send chunk if this is the current request and generation is active
           if (isGenerating && currentRequestId === requestId) {
             socket.emit('message-chunk', chunk);
           }
         },
         onComplete: () => {
-          // Завершаем только если это текущий запрос
+          // Only complete if this is the current request
           if (currentRequestId === requestId) {
-            console.log(`Завершение генерации для запроса ${requestId}`);
+            console.log(`Completed generation for request ${requestId}`);
             socket.emit('message-complete');
             isGenerating = false;
           }
         },
         onError: (error) => {
-          console.error(`Ошибка при генерации для запроса ${requestId}:`, error);
-          // Сообщаем об ошибке только если это текущий запрос
+          console.error(`Error generating for request ${requestId}:`, error);
+          // Only report error if this is the current request
           if (currentRequestId === requestId) {
-            socket.emit('error', 'Произошла ошибка при получении ответа от модели');
+            socket.emit('error', 'An error occurred while getting a response from the model');
             isGenerating = false;
           }
         }
       });
     } catch (error) {
-      console.error(`Ошибка при обработке запроса ${requestId}:`, error);
+      console.error(`Error processing request ${requestId}:`, error);
       if (currentRequestId === requestId) {
-        socket.emit('error', 'Произошла ошибка при обработке сообщения');
+        socket.emit('error', 'An error occurred while processing the message');
         isGenerating = false;
       }
     }
