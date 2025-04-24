@@ -1,6 +1,5 @@
 // server/src/services/llm.js
 const axios = require('axios');
-const csvAnalyzer = require('./csvAnalyzer');
 
 // URL для доступа к модели в Docker
 const LLM_API_URL = process.env.LLM_API_URL || 'http://localhost:11434/api/generate';
@@ -19,10 +18,16 @@ function isCSVFile(file) {
          (file.name && file.name.toLowerCase().endsWith('.csv'));
 }
 
-function isHTMLFile(file) {
-  return file.type === 'text/html' || 
-         (file.name && (file.name.toLowerCase().endsWith('.html') || 
-                        file.name.toLowerCase().endsWith('.htm')));
+function isJSONFile(file) {
+  return file.type === 'application/json' || 
+         (file.name && file.name.toLowerCase().endsWith('.json'));
+}
+
+// Форматирование размера файла
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' Б';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' КБ';
+  return (bytes / 1048576).toFixed(1) + ' МБ';
 }
 
 /**
@@ -34,6 +39,100 @@ const getAvailableModels = () => {
 };
 
 /**
+ * Анализирует CSV файл и возвращает информацию о его структуре
+ * @param {string} content - Содержимое CSV файла
+ * @returns {Object} - Информация о структуре CSV
+ */
+function analyzeCSV(content) {
+  try {
+    const lines = content.trim().split('\n');
+    const totalRows = lines.length;
+    
+    // Если файл пустой или содержит только заголовок
+    if (totalRows <= 1) {
+      return {
+        success: true,
+        rowCount: totalRows,
+        columnCount: totalRows > 0 ? lines[0].split(',').length : 0,
+        headers: totalRows > 0 ? lines[0].split(',').map(h => h.trim()) : [],
+        firstRow: totalRows > 1 ? lines[1] : null,
+        lastRow: totalRows > 1 ? lines[totalRows - 1] : null
+      };
+    }
+    
+    // Получаем заголовки и определяем количество столбцов
+    const headers = lines[0].split(',').map(h => h.trim());
+    const columnCount = headers.length;
+    
+    // Получаем первую и последнюю строки данных
+    const firstRow = lines[1];
+    const lastRow = lines[totalRows - 1];
+    
+    // Получаем все уникальные значения первого столбца
+    const firstColumnValues = [];
+    for (let i = 1; i < totalRows; i++) {
+      const columns = lines[i].split(',');
+      if (columns.length > 0) {
+        firstColumnValues.push(columns[0].trim());
+      }
+    }
+    
+    return {
+      success: true,
+      rowCount: totalRows,
+      columnCount,
+      headers,
+      firstRow,
+      lastRow,
+      firstColumnValues: firstColumnValues.slice(0, 20) // Ограничиваем до 20 значений
+    };
+  } catch (error) {
+    console.error('Ошибка при анализе CSV:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+/**
+ * Обрабатывает CSV, упрощая данные для модели
+ * @param {string} content - Содержимое CSV файла
+ * @returns {string} - Форматированное описание CSV
+ */
+function processCSVForModel(content) {
+  const csvInfo = analyzeCSV(content);
+  if (!csvInfo.success) {
+    return `CSV файл не удалось проанализировать: ${csvInfo.error}\n`;
+  }
+  
+  let result = '';
+  
+  // Базовая информация о файле
+  result += `=== ИНФОРМАЦИЯ О CSV ФАЙЛЕ ===\n`;
+  result += `Всего строк: ${csvInfo.rowCount}\n`;
+  result += `Всего столбцов: ${csvInfo.columnCount}\n`;
+  result += `Заголовки: ${csvInfo.headers.join(', ')}\n\n`;
+  
+  // Первая строка данных
+  if (csvInfo.firstRow) {
+    result += `Первая строка данных:\n${csvInfo.firstRow}\n\n`;
+  }
+  
+  // Последняя строка данных
+  if (csvInfo.lastRow) {
+    result += `Последняя строка данных:\n${csvInfo.lastRow}\n\n`;
+  }
+  
+  // Примеры значений из первого столбца
+  if (csvInfo.firstColumnValues && csvInfo.firstColumnValues.length > 0) {
+    result += `Примеры значений из первого столбца: ${csvInfo.firstColumnValues.join(', ')}\n\n`;
+  }
+  
+  return result;
+}
+
+/**
  * Форматирует сообщения в формат для запроса к API модели
  * @param {Array} messages - История сообщений
  * @param {Array} attachments - Прикрепленные файлы
@@ -42,11 +141,43 @@ const getAvailableModels = () => {
 const formatPrompt = (messages, attachments = []) => {
   console.log(`Форматирование запроса: ${messages.length} сообщений, ${attachments.length} вложений`);
   
-  // Форматируем историю сообщений
+  // Получаем последнее сообщение пользователя
+  const lastUserMessage = messages.filter(msg => msg.role === 'user').pop();
+  const lastUserContent = lastUserMessage ? lastUserMessage.content.trim().toLowerCase() : '';
+  
+  // Определяем специальные типы запросов
+  const askingAboutRows = /сколько.*строк/i.test(lastUserContent) || /кол.*строк/i.test(lastUserContent);
+  const askingAboutColumns = /сколько.*столб/i.test(lastUserContent) || /кол.*столб/i.test(lastUserContent);
+  const askingAboutBoth = (askingAboutRows && askingAboutColumns) || /строк.*столб/i.test(lastUserContent);
+  const askingAboutFirstRow = /перв.*строк/i.test(lastUserContent);
+  const askingAboutLastRow = /послед.*строк/i.test(lastUserContent);
+  const askingAboutFirstColumn = /перв.*столб/i.test(lastUserContent);
+  const isMathQuestion = /сколько будет/i.test(lastUserContent) || /\d+\s*[+\-*/]\s*\d+/.test(lastUserContent);
+  
+  // Форматируем промпт, начиная с системного сообщения
   let prompt = '';
   
-  // Добавляем системное сообщение
-  prompt += `Ты дружелюбный и полезный ассистент. Ты можешь отвечать на различные вопросы и анализировать содержимое файлов. Всегда отвечай на вопросы пользователя прямо, не спрашивая дополнительные вопросы без необходимости.\n\n`;
+  // Базовые системные инструкции
+  prompt += `Ты дружелюбный и полезный ассистент. Ты можешь анализировать содержимое файлов и отвечать на вопросы пользователя.\n`;
+  
+  // Специальные инструкции в зависимости от типа вопроса
+  if (askingAboutBoth) {
+    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о количестве строк и столбцов. Ответь только в формате: "В файле X строк и Y столбцов."\n\n`;
+  } else if (askingAboutRows) {
+    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о количестве строк. Ответь только числом строк.\n\n`;
+  } else if (askingAboutColumns) {
+    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о количестве столбцов. Ответь только числом столбцов.\n\n`;
+  } else if (askingAboutFirstRow) {
+    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о первой строке. Покажи содержимое первой строки данных (не заголовка).\n\n`;
+  } else if (askingAboutLastRow) {
+    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о последней строке. Покажи содержимое последней строки данных.\n\n`;
+  } else if (askingAboutFirstColumn) {
+    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о первом столбце. Покажи примеры значений из первого столбца.\n\n`;
+  } else if (isMathQuestion) {
+    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь задал математический вопрос. Ответь только результатом вычисления.\n\n`;
+  } else {
+    prompt += `ИНСТРУКЦИИ: Отвечай только на вопрос пользователя. Не повторяй содержимое файлов без необходимости.\n\n`;
+  }
   
   // Добавляем историю сообщений
   messages.forEach(msg => {
@@ -59,69 +190,78 @@ const formatPrompt = (messages, attachments = []) => {
     }
   });
   
-  // Базовые инструкции по работе с файлами
+  // Добавляем информацию о файлах
   if (attachments && attachments.length > 0) {
-    prompt += `Информация о прикрепленных файлах:\n\n`;
+    prompt += `### ДАННЫЕ ДЛЯ АНАЛИЗА ###\n`;
     
     attachments.forEach(file => {
       const fileName = file.name || 'Unnamed file';
       const fileType = file.type || 'unknown type';
+      const fileSize = formatFileSize(file.size);
       
-      prompt += `К сообщению прикреплен файл: ${fileName} (${fileType})\n`;
+      prompt += `Файл: ${fileName} (${fileType}, ${fileSize})\n`;
       
-      // Для CSV файлов добавляем базовую информацию
+      // Обработка CSV файлов
       if (isCSVFile(file) && file.content) {
-        // Используем csvAnalyzer для анализа файла
-        const csvInfo = csvAnalyzer.analyzeCSV(file.content);
+        const csvInfo = analyzeCSV(file.content);
+        const rowCount = csvInfo.rowCount;
+        const columnCount = csvInfo.columnCount;
         
-        if (csvInfo.success) {
-          prompt += `CSV файл содержит ${csvInfo.rowCount} строк данных.\n\n`;
-          
-          prompt += `Заголовки CSV: ${csvInfo.headers.join(', ')}\n\n`;
-          
-          prompt += `Первая строка данных:\n`;
-          Object.entries(csvInfo.firstRow).forEach(([key, value]) => {
-            prompt += `${key}: ${value}\n`;
-          });
-          prompt += `\n`;
-          
-          prompt += `Последняя строка данных:\n`;
-          Object.entries(csvInfo.lastRow).forEach(([key, value]) => {
-            prompt += `${key}: ${value}\n`;
-          });
-          prompt += `\n`;
-          
-          // Инструкции для модели по работе с CSV
-          prompt += `Важное примечание: В CSV файле содержатся только данные, которые я предоставил выше. `;
-          prompt += `Не придумывай дополнительные строки, которых нет в файле. `;
-          prompt += `Если тебя просят показать строки из файла, показывай только реальные данные из файла.\n\n`;
+        // Добавляем структурированную информацию для специальных запросов
+        if (askingAboutBoth) {
+          prompt += `В файле ${rowCount} строк и ${columnCount} столбцов.\n`;
+        } else if (askingAboutRows) {
+          prompt += `Количество строк в файле: ${rowCount}\n`;
+        } else if (askingAboutColumns) {
+          prompt += `Количество столбцов в файле: ${columnCount}\n`;
         } else {
-          // Если анализатор не сработал, используем простой подход
-          const lines = file.content.split('\n');
-          const totalRows = lines.length - 1; // Количество строк без заголовка
-          
-          prompt += `Этот CSV файл содержит ${totalRows} строк данных.\n`;
-          
-          // Добавляем заголовки и первую/последнюю строку
-          if (lines.length > 1) {
-            prompt += `Заголовки: ${lines[0]}\n`;
-            prompt += `Первая строка данных: ${lines[1]}\n`;
-            prompt += `Последняя строка данных: ${lines[lines.length - 1]}\n\n`;
-            
-            // Добавляем первые 5 строк как образец
-            prompt += `Вот первые 5 строк файла:\n`;
-            for (let i = 0; i < Math.min(5, lines.length); i++) {
-              prompt += `${lines[i]}\n`;
-            }
-            prompt += `\n`;
-          }
+          // Общая информация о CSV
+          prompt += processCSVForModel(file.content);
         }
-      } 
-      // Для других текстовых файлов добавляем кусочек содержимого
+      }
+      // Обработка JSON файлов
+      else if (isJSONFile(file) && file.content) {
+        if (file.content.length <= 5000) {
+          prompt += `Содержимое JSON файла:\n${file.content}\n\n`;
+        } else {
+          prompt += `JSON файл слишком большой для полного включения (${file.content.length} символов).\n`;
+          prompt += `Начало файла:\n${file.content.substring(0, 1000)}...\n\n`;
+        }
+      }
+      // Обработка остальных текстовых файлов
       else if (file.content) {
-        prompt += `Вот первые 200 символов файла:\n${file.content.substring(0, 200)}...\n\n`;
+        if (file.content.length <= 5000) {
+          prompt += `Содержимое файла:\n${file.content}\n\n`;
+        } else {
+          prompt += `Файл слишком большой для полного включения (${file.content.length} символов).\n`;
+          prompt += `Начало файла:\n${file.content.substring(0, 1000)}...\n\n`;
+        }
+      }
+      // Для бинарных файлов
+      else {
+        prompt += `[Бинарный файл, содержимое недоступно для анализа]\n\n`;
       }
     });
+    
+    prompt += `### КОНЕЦ ДАННЫХ ###\n\n`;
+  }
+  
+  // Финальные инструкции перед ответом
+  if (askingAboutBoth) {
+    prompt += `НАПОМИНАНИЕ: Ответь только в формате "В файле X строк и Y столбцов."\n\n`;
+  } else if (askingAboutRows) {
+    prompt += `НАПОМИНАНИЕ: Ответь только числом строк.\n\n`;
+  } else if (askingAboutColumns) {
+    prompt += `НАПОМИНАНИЕ: Ответь только числом столбцов.\n\n`;
+  } else if (isMathQuestion) {
+    prompt += `НАПОМИНАНИЕ: Ответь только результатом математического вычисления.\n\n`;
+  } else {
+    prompt += `НАПОМИНАНИЕ: Отвечай кратко и точно на вопрос пользователя.\n\n`;
+  }
+  
+  // Повторяем актуальный вопрос пользователя
+  if (lastUserMessage) {
+    prompt += `Вопрос пользователя: "${lastUserMessage.content}"\n\n`;
   }
   
   // Добавляем префикс для ответа модели
