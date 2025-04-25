@@ -7,7 +7,7 @@ const embeddings = require('./embeddings');
 const vectorStore = require('./vectorStore');
 const fileManager = require('./fileManager');
 
-// Regex patterns for splitting documents
+// Settings for document processing
 const CHUNK_SIZE = 1000; // Characters per chunk
 const CHUNK_OVERLAP = 200; // Overlap between chunks
 
@@ -17,6 +17,11 @@ const CHUNK_OVERLAP = 200; // Overlap between chunks
  * @returns {string} - MD5 hash
  */
 function calculateContentHash(content) {
+  if (!content || typeof content !== 'string') {
+    console.warn('Invalid content for hashing');
+    return '';
+  }
+  
   return crypto.createHash('md5').update(content).digest('hex');
 }
 
@@ -28,8 +33,18 @@ function calculateContentHash(content) {
  * @returns {Array<string>} - Array of text chunks
  */
 function splitIntoChunks(text, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP) {
+  if (!text || typeof text !== 'string') {
+    console.warn('Invalid text for chunking');
+    return [];
+  }
+  
   const chunks = [];
   let i = 0;
+  
+  // Handle very short texts
+  if (text.length <= chunkSize) {
+    return [text];
+  }
   
   while (i < text.length) {
     // Calculate end position with potential overlap
@@ -45,6 +60,11 @@ function splitIntoChunks(text, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP) 
     }
   }
   
+  // Make sure we have at least one chunk
+  if (chunks.length === 0 && text.length > 0) {
+    chunks.push(text);
+  }
+  
   return chunks;
 }
 
@@ -55,9 +75,20 @@ function splitIntoChunks(text, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP) 
  */
 async function processDocument(file) {
   try {
-    console.log(`Processing document: ${file.name}`);
+    console.log(`Processing document: ${file.name} (${file.size} bytes)`);
     
-    if (!file.content) {
+    // Validate file object
+    if (!file || !file.name) {
+      return {
+        success: false,
+        error: 'Invalid file object',
+        message: 'File object is missing required properties.'
+      };
+    }
+    
+    // Ensure we have content to process
+    if (!file.content || typeof file.content !== 'string') {
+      console.error(`No content provided for file: ${file.name}`);
       return {
         success: false,
         error: 'No content provided',
@@ -85,12 +116,14 @@ async function processDocument(file) {
     const metadata = {
       id: docId,
       fileName: file.name,
-      fileType: file.type,
-      fileSize: file.size,
+      fileType: file.type || 'text/plain',
+      fileSize: file.size || file.content.length,
       contentHash,
       createdAt: new Date().toISOString(),
       chunkCount: 0
     };
+    
+    console.log(`Created metadata for document: ${docId} (${file.name})`);
     
     // Split content into chunks
     const chunks = splitIntoChunks(file.content);
@@ -102,33 +135,66 @@ async function processDocument(file) {
       const chunk = chunks[i];
       const chunkId = `${docId}-chunk-${i}`;
       
-      // Generate embedding for chunk
-      const embedding = await embeddings.generateEmbedding(chunk);
-      
-      const chunkMetadata = {
-        ...metadata,
-        chunkId,
-        chunkIndex: i,
-        chunkSize: chunk.length,
-        chunkTotal: chunks.length
-      };
-      
-      processedChunks.push({
-        id: chunkId,
-        text: chunk,
-        embedding,
-        metadata: chunkMetadata
-      });
+      try {
+        // Generate embedding for chunk
+        const embedding = await embeddings.generateEmbedding(chunk);
+        
+        if (!embedding || !Array.isArray(embedding)) {
+          console.error(`Failed to generate embedding for chunk ${i} of ${docId}`);
+          continue;
+        }
+        
+        const chunkMetadata = {
+          ...metadata,
+          chunkId,
+          chunkIndex: i,
+          chunkSize: chunk.length,
+          chunkTotal: chunks.length
+        };
+        
+        processedChunks.push({
+          id: chunkId,
+          text: chunk,
+          embedding,
+          metadata: chunkMetadata
+        });
+        
+        console.log(`Processed chunk ${i + 1}/${chunks.length} for ${docId}`);
+      } catch (chunkError) {
+        console.error(`Error processing chunk ${i} of ${docId}:`, chunkError);
+      }
     }
     
     // Save document metadata
     metadata.chunkCount = processedChunks.length;
-    await fileManager.saveFileMeta(metadata, file.content);
+    const saveResult = await fileManager.saveFileMeta(metadata, file.content);
+    
+    if (!saveResult) {
+      console.error(`Failed to save metadata for ${docId}`);
+      return {
+        success: false,
+        error: 'Failed to save document metadata',
+        message: 'Could not save document metadata to disk.'
+      };
+    }
+    
+    console.log(`Saved metadata for ${docId} with ${processedChunks.length} chunks`);
     
     // Save all chunks to vector store
+    let savedChunks = 0;
     for (const chunk of processedChunks) {
-      await vectorStore.addChunk(chunk);
+      try {
+        const added = await vectorStore.addChunk(chunk);
+        if (added) savedChunks++;
+      } catch (vectorError) {
+        console.error(`Error adding chunk to vector store:`, vectorError);
+      }
     }
+    
+    console.log(`Added ${savedChunks}/${processedChunks.length} chunks to vector store for ${docId}`);
+    
+    // Save vector store changes
+    vectorStore.saveAll();
     
     return {
       success: true,
@@ -136,7 +202,7 @@ async function processDocument(file) {
       documentId: docId,
       metadata,
       chunks: processedChunks,
-      message: 'Document processed successfully.'
+      message: `Document processed successfully. Created ${processedChunks.length} chunks.`
     };
   } catch (error) {
     console.error('Error processing document:', error);
@@ -156,13 +222,40 @@ async function processDocument(file) {
  */
 async function searchRelevantChunks(query, limit = 5) {
   try {
-    console.log(`Searching for chunks relevant to query: ${query}`);
+    console.log(`Searching for chunks relevant to query: "${query}"`);
+    
+    if (!query || typeof query !== 'string' || query.trim() === '') {
+      console.warn('Empty or invalid search query');
+      return {
+        success: false,
+        results: [],
+        error: 'Invalid query',
+        message: 'Search query is empty or invalid.'
+      };
+    }
     
     // Generate embedding for query
     const queryEmbedding = await embeddings.generateEmbedding(query);
     
+    if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
+      console.error('Failed to generate embedding for query');
+      return {
+        success: false,
+        results: [],
+        error: 'Embedding generation failed',
+        message: 'Could not generate vector embedding for query.'
+      };
+    }
+    
     // Search vector store for similar chunks
     const results = await vectorStore.similaritySearch(queryEmbedding, limit);
+    
+    console.log(`Found ${results.length} relevant chunks for query`);
+    
+    // For debugging, show similarity scores
+    if (results.length > 0) {
+      console.log('Top result similarity:', results[0].score);
+    }
     
     return {
       success: true,
@@ -183,5 +276,6 @@ async function searchRelevantChunks(query, limit = 5) {
 module.exports = {
   processDocument,
   searchRelevantChunks,
-  calculateContentHash
+  calculateContentHash,
+  splitIntoChunks
 };

@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
-// File storage paths
+// File storage paths - use path.join for cross-platform compatibility
 const DATA_DIR = path.join(__dirname, '../data');
 const METADATA_DIR = path.join(DATA_DIR, 'metadata');
 const CONTENT_DIR = path.join(DATA_DIR, 'content');
@@ -13,19 +13,16 @@ const HASH_INDEX_PATH = path.join(DATA_DIR, 'hash_index.json');
 let fileMetadata = {};
 let hashIndex = {}; // Maps content hash to file ID
 
-// Ensure directories exist
+// Ensure directories exist with proper permissions
 function ensureDirectoriesExist() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  const dirs = [DATA_DIR, METADATA_DIR, CONTENT_DIR];
   
-  if (!fs.existsSync(METADATA_DIR)) {
-    fs.mkdirSync(METADATA_DIR, { recursive: true });
-  }
-  
-  if (!fs.existsSync(CONTENT_DIR)) {
-    fs.mkdirSync(CONTENT_DIR, { recursive: true });
-  }
+  dirs.forEach(dir => {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+      console.log(`Created directory: ${dir}`);
+    }
+  });
 }
 
 // Initialize the file management system
@@ -136,6 +133,7 @@ async function saveFileMeta(metadata, content) {
       saveHashIndex();
     }
     
+    console.log(`Successfully saved file: ${metadata.fileName} (${metadata.id})`);
     return true;
   } catch (error) {
     console.error('Error saving file metadata:', error);
@@ -162,6 +160,7 @@ async function getFileContent(fileId) {
     const contentPath = path.join(CONTENT_DIR, `${fileId}.txt`);
     
     if (!fs.existsSync(contentPath)) {
+      console.warn(`File content not found: ${fileId}`);
       return null;
     }
     
@@ -181,6 +180,7 @@ async function deleteFile(fileId) {
   try {
     const metadata = fileMetadata[fileId];
     if (!metadata) {
+      console.warn(`File not found for deletion: ${fileId}`);
       return false;
     }
     
@@ -205,6 +205,7 @@ async function deleteFile(fileId) {
     // Remove from in-memory index
     delete fileMetadata[fileId];
     
+    console.log(`Successfully deleted file: ${fileId}`);
     return true;
   } catch (error) {
     console.error(`Error deleting file ${fileId}:`, error);
@@ -255,5 +256,6 @@ module.exports = {
   deleteFile,
   getAllFileMeta,
   findFileByHash,
-  searchFiles
+  searchFiles,
+  ensureDirectoriesExist
 };

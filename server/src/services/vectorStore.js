@@ -15,7 +15,7 @@ let vectorIndex = {};
 function ensureDataDirectoryExists() {
   const dir = path.dirname(VECTOR_DB_PATH);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
   }
 }
 
@@ -45,6 +45,7 @@ function initializeVectorStore() {
     }
   } catch (error) {
     console.error('Error initializing vector store:', error);
+    // Recover from corrupt files by creating new ones
     vectorStore = [];
     vectorIndex = {};
     saveVectorStore();
@@ -56,7 +57,7 @@ function initializeVectorStore() {
 function saveVectorStore() {
   ensureDataDirectoryExists();
   try {
-    fs.writeFileSync(VECTOR_DB_PATH, JSON.stringify(vectorStore, null, 2), 'utf-8');
+    fs.writeFileSync(VECTOR_DB_PATH, JSON.stringify(vectorStore), 'utf-8');
     console.log(`Saved ${vectorStore.length} vectors to disk.`);
   } catch (error) {
     console.error("Error saving vector store:", error);
@@ -67,7 +68,7 @@ function saveVectorStore() {
 function saveVectorIndex() {
   ensureDataDirectoryExists();
   try {
-    fs.writeFileSync(INDEX_FILE_PATH, JSON.stringify(vectorIndex, null, 2), 'utf-8');
+    fs.writeFileSync(INDEX_FILE_PATH, JSON.stringify(vectorIndex), 'utf-8');
     console.log(`Saved vector index with ${Object.keys(vectorIndex).length} entries to disk.`);
   } catch (error) {
     console.error("Error saving vector index:", error);
@@ -123,9 +124,6 @@ async function addChunk(chunk) {
       }
     }
     
-    // Save immediately after adding a chunk
-    saveAll();
-    
     return true;
   } catch (error) {
     console.error('Error adding chunk to vector store:', error);
@@ -143,7 +141,14 @@ function getDocumentChunks(documentId) {
     return [];
   }
   
-  return vectorIndex[documentId].map(position => vectorStore[position]);
+  return vectorIndex[documentId]
+    .map(position => {
+      if (position >= 0 && position < vectorStore.length) {
+        return vectorStore[position];
+      }
+      return null;
+    })
+    .filter(chunk => chunk !== null);
 }
 
 /**
@@ -209,36 +214,45 @@ function rebuildIndex() {
 async function similaritySearch(queryEmbedding, limit = 5, similarityThreshold = 0.4) {
   try {
     if (vectorStore.length === 0) {
-      console.log("Warning: Vector store is empty");
+      console.log("Vector store is empty");
+      return [];
+    }
+    
+    if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
+      console.error('Invalid query embedding');
       return [];
     }
     
     // Calculate similarity for all vectors
-    const scoredChunks = vectorStore.map(chunk => {
-      if (!chunk.embedding) {
-        console.error("Chunk missing embedding:", chunk.id);
-        return { ...chunk, score: 0 };
+    const scoredChunks = [];
+    
+    for (let i = 0; i < vectorStore.length; i++) {
+      const chunk = vectorStore[i];
+      
+      if (!chunk.embedding || !Array.isArray(chunk.embedding)) {
+        console.error(`Chunk ${chunk.id} missing valid embedding`);
+        continue;
       }
       
       try {
         const score = cosineSimilarity(queryEmbedding, chunk.embedding);
-        return {
-          ...chunk,
-          score
-        };
+        
+        if (score >= similarityThreshold) {
+          scoredChunks.push({
+            ...chunk,
+            score
+          });
+        }
       } catch (error) {
         console.error(`Error calculating similarity for chunk ${chunk.id}:`, error);
-        return { ...chunk, score: 0 };
       }
-    });
+    }
     
     // Sort by similarity score (descending)
     scoredChunks.sort((a, b) => b.score - a.score);
     
-    // Filter by threshold and limit
-    return scoredChunks
-      .filter(item => item.score >= similarityThreshold)
-      .slice(0, limit);
+    // Return top results limited by limit
+    return scoredChunks.slice(0, limit);
   } catch (error) {
     console.error('Error performing similarity search:', error);
     return [];
@@ -250,16 +264,57 @@ async function similaritySearch(queryEmbedding, limit = 5, similarityThreshold =
  * @returns {Object} - Stats about the vector store
  */
 function getStats() {
+  const docCount = Object.keys(vectorIndex).length;
+  
   return {
     totalVectors: vectorStore.length,
-    totalDocuments: Object.keys(vectorIndex).length,
-    averageChunksPerDocument: vectorStore.length / Math.max(1, Object.keys(vectorIndex).length)
+    totalDocuments: docCount,
+    averageChunksPerDocument: docCount ? vectorStore.length / docCount : 0
   };
+}
+
+// Check vector store integrity and repair if needed
+function checkAndRepairVectorStore() {
+  console.log('Checking vector store integrity...');
+  
+  // Check if vectorStore is an array
+  if (!Array.isArray(vectorStore)) {
+    console.error('Vector store is not an array, resetting');
+    vectorStore = [];
+  }
+  
+  // Check if vectorIndex is an object
+  if (typeof vectorIndex !== 'object' || vectorIndex === null) {
+    console.error('Vector index is not an object, resetting');
+    vectorIndex = {};
+  }
+  
+  // Check for valid chunks and embeddings
+  let invalidChunks = 0;
+  
+  for (let i = vectorStore.length - 1; i >= 0; i--) {
+    const chunk = vectorStore[i];
+    
+    // Check if chunk is valid
+    if (!chunk || !chunk.id || !chunk.text || !chunk.embedding || !Array.isArray(chunk.embedding)) {
+      vectorStore.splice(i, 1);
+      invalidChunks++;
+    }
+  }
+  
+  if (invalidChunks > 0) {
+    console.warn(`Removed ${invalidChunks} invalid chunks from vector store`);
+    rebuildIndex();
+    saveAll();
+  }
+  
+  console.log('Vector store integrity check complete');
 }
 
 // Initialize on module load
 initializeVectorStore();
 setupPeriodicSaving();
+checkAndRepairVectorStore();
 
 module.exports = {
   addChunk,
@@ -267,5 +322,6 @@ module.exports = {
   removeDocument,
   similaritySearch,
   getStats,
-  saveAll
+  saveAll,
+  checkAndRepairVectorStore
 };
