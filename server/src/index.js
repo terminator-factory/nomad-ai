@@ -11,26 +11,15 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
 const llmService = require('./services/llm');
-const fileManager = require('./services/fileManager');
-const documentProcessor = require('./services/documentProcessor');
-const vectorStore = require('./services/vectorStore');
-const embeddings = require('./services/embeddings');
 
-// Initialize services to ensure directories exist
-fileManager.ensureDirectoriesExist();
-embeddings.loadEmbeddingCache();
-
-// Session attachment storage
-const sessionAttachments = new Map();
-
-// Setup Express
+// Настройка Express
 const app = express();
 const server = http.createServer(app);
 
-// CORS configuration for Socket.IO
+// Настройка CORS для Socket.IO
 const io = socketIo(server, {
   cors: {
-    origin: '*', // Allow all origins for development - restrict in production
+    origin: ['http://10.15.123.137:9090', 'http://10.15.123.137:3000', 'http://localhost:3000'],
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -38,169 +27,100 @@ const io = socketIo(server, {
 
 // Middleware
 app.use(cors({
-  origin: '*', // Allow all origins for development - restrict in production
+  origin: ['http://10.15.123.137:9090', 'http://10.15.123.137:3000', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json());
 app.use(morgan('dev'));
 
-// File upload configuration
-const uploadDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true, mode: 0o755 });
-}
+// Настройка директорий для хранения данных
+const dataDir = path.join(__dirname, '../../data'); // Используем корневую директорию /data в контейнере
+const uploadDir = path.join(dataDir, 'uploads');
+const contentDir = path.join(dataDir, 'content');
+const metadataDir = path.join(dataDir, 'metadata');
+const vectorsDir = path.join(dataDir, 'vectors');
 
+// Создаем все необходимые директории
+[dataDir, uploadDir, contentDir, metadataDir, vectorsDir].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`Created directory: ${dir}`);
+  }
+});
+
+// Настройка загрузки файлов
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    // Sanitize filename to avoid path traversal issues
-    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    cb(null, `${uuidv4()}-${sanitizedName}`);
+    cb(null, `${uuidv4()}-${file.originalname}`);
   }
 });
 
-const upload = multer({ 
-  storage,
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
-});
+const upload = multer({ storage });
 
-// API Routes
+// Основные маршруты API
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'ok',
-    timestamp: new Date().toISOString()
+  res.status(200).json({ status: 'ok' });
+});
+
+// Маршрут для проверки директорий
+app.get('/api/check-dirs', (req, res) => {
+  const dirs = {
+    dataDir: { path: dataDir, exists: fs.existsSync(dataDir) },
+    uploadDir: { path: uploadDir, exists: fs.existsSync(uploadDir) },
+    contentDir: { path: contentDir, exists: fs.existsSync(contentDir) },
+    metadataDir: { path: metadataDir, exists: fs.existsSync(metadataDir) },
+    vectorsDir: { path: vectorsDir, exists: fs.existsSync(vectorsDir) },
+  };
+  res.status(200).json(dirs);
+});
+
+// Маршрут для загрузки файлов
+app.post('/api/upload', upload.array('files'), (req, res) => {
+  const files = req.files.map(file => ({
+    id: uuidv4(),
+    name: file.originalname,
+    path: file.path,
+    size: file.size,
+    type: file.mimetype
+  }));
+  
+  // Сохраняем информацию о файлах в content и metadata директории
+  files.forEach(file => {
+    const fileId = uuidv4();
+    const contentPath = path.join(contentDir, fileId);
+    const metadataPath = path.join(metadataDir, `${fileId}.json`);
+    
+    // Копируем файл из uploads в content
+    fs.copyFileSync(file.path, contentPath);
+    
+    // Создаем метаданные
+    const metadata = {
+      id: fileId,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      uploadedAt: new Date().toISOString(),
+      path: contentPath
+    };
+    
+    // Сохраняем метаданные
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+    
+    console.log(`File ${file.name} saved as ${fileId} to content and metadata directories`);
   });
+  
+  res.status(200).json({ files });
 });
 
-// Get RAG knowledge base statistics
-app.get('/api/kb/stats', async (req, res) => {
+
+app.post('/api/tags', async (req, res) => {
   try {
-    // Get vector store stats
-    const vectorStats = vectorStore.getStats();
-    
-    // Get all document metadata
-    const documents = await fileManager.getAllFileMeta();
-    
-    res.status(200).json({
-      status: 'ok',
-      knowledgeBase: {
-        documentCount: documents.length,
-        vectorStats
-      }
-    });
-  } catch (error) {
-    console.error('Error getting knowledge base stats:', error);
-    res.status(500).json({ error: 'Failed to get knowledge base statistics' });
-  }
-});
-
-// Get all documents in knowledge base
-app.get('/api/kb/documents', async (req, res) => {
-  try {
-    const documents = await fileManager.getAllFileMeta();
-    res.status(200).json({ documents });
-  } catch (error) {
-    console.error('Error getting knowledge base documents:', error);
-    res.status(500).json({ error: 'Failed to get knowledge base documents' });
-  }
-});
-
-// Delete document from knowledge base
-app.delete('/api/kb/documents/:documentId', async (req, res) => {
-  try {
-    const { documentId } = req.params;
-    const success = await llmService.deleteDocument(documentId);
-    
-    if (success) {
-      res.status(200).json({ status: 'ok', message: 'Document deleted successfully' });
-    } else {
-      res.status(404).json({ status: 'error', message: 'Document not found or could not be deleted' });
-    }
-  } catch (error) {
-    console.error('Error deleting document:', error);
-    res.status(500).json({ error: 'Failed to delete document' });
-  }
-});
-
-// Upload files endpoint
-app.post('/api/upload', upload.array('files'), async (req, res) => {
-  try {
-    const files = req.files.map(file => {
-      // Read file content synchronously - for real production use async methods
-      let content = null;
-      try {
-        // Only read text files
-        if (file.mimetype.startsWith('text/') || 
-            file.mimetype === 'application/json' || 
-            file.mimetype === 'application/xml' ||
-            file.originalname.endsWith('.csv') ||
-            file.originalname.endsWith('.txt') ||
-            file.originalname.endsWith('.md')) {
-          content = fs.readFileSync(file.path, 'utf-8');
-        }
-      } catch (readError) {
-        console.error(`Error reading file ${file.originalname}:`, readError);
-      }
-      
-      return {
-        id: uuidv4(),
-        name: file.originalname,
-        path: file.path,
-        type: file.mimetype,
-        size: file.size,
-        content
-      };
-    });
-    
-    // Process files for RAG if they have content
-    const processingResults = [];
-    for (const file of files) {
-      if (file.content) {
-        try {
-          const result = await documentProcessor.processDocument(file);
-          processingResults.push({
-            fileName: file.name,
-            success: result.success,
-            isDuplicate: result.isDuplicate,
-            documentId: result.documentId
-          });
-        } catch (procError) {
-          console.error(`Error processing file ${file.name}:`, procError);
-          processingResults.push({
-            fileName: file.name,
-            success: false,
-            error: procError.message
-          });
-        }
-      }
-    }
-    
-    res.status(200).json({ 
-      files,
-      processingResults
-    });
-  } catch (error) {
-    console.error('Error handling file upload:', error);
-    res.status(500).json({ error: 'Failed to upload files' });
-  }
-});
-
-// Get available models
-app.get('/api/models', (req, res) => {
-  const models = llmService.getAvailableModels();
-  res.status(200).json({ models });
-});
-
-// Ollama API proxy for tags
-app.get('/api/tags', async (req, res) => {
-  try {
-    // Extract base URL from environment variable
-    const llmApiUrl = process.env.LLM_API_URL || 'http://localhost:11434/api/generate';
-    const baseUrl = llmApiUrl.replace('/api/generate', '');
-    
+    // Извлекаем базовый URL из переменной окружения
+    const baseUrl = process.env.LLM_API_URL.replace('/api/generate', '');
     const response = await axios.get(`${baseUrl}/api/tags`);
     res.json(response.data);
   } catch (error) {
@@ -209,264 +129,175 @@ app.get('/api/tags', async (req, res) => {
   }
 });
 
-// Search documents endpoint
-app.post('/api/search', async (req, res) => {
-  try {
-    const { query, limit = 5 } = req.body;
-    
-    if (!query) {
-      return res.status(400).json({ error: 'Query is required' });
-    }
-    
-    const results = await documentProcessor.searchRelevantChunks(query, limit);
-    res.json(results);
-  } catch (error) {
-    console.error('Error during search:', error);
-    res.status(500).json({ error: 'Failed to search documents' });
-  }
-});
-
-// Direct LLM query endpoint (for testing)
-app.post('/api/query', async (req, res) => {
-  try {
-    const { messages, attachments, model = 'gemma3:4b' } = req.body;
-    
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: 'Valid messages array is required' });
-    }
-    
-    // Format prompt
-    const prompt = await llmService.formatPrompt(messages, attachments);
-    
-    // Send request to LLM API
-    const llmResponse = await axios.post(process.env.LLM_API_URL, {
-      model,
-      prompt,
-      stream: false
-    });
-    
-    res.json({
-      response: llmResponse.data.response,
-      model,
-      inputTokens: prompt.length / 4, // Rough estimate
-      outputTokens: llmResponse.data.response.length / 4 // Rough estimate
-    });
-  } catch (error) {
-    console.error('Error querying LLM:', error);
-    res.status(500).json({ error: 'Failed to query LLM' });
-  }
-});
-
-// Socket.IO connection handling
+// Socket.IO обработка соединений
 io.on('connection', (socket) => {
-  console.log('New connection:', socket.id);
+  console.log('Новое подключение:', socket.id);
   
-  // State tracking for each connection
-  let currentRequestId = null;
-  let isGenerating = false;
-  let currentSessionId = null;
+  // Отслеживание состояния для каждого соединения
+  let currentRequestId = null;    // ID текущего запроса
+  let isGenerating = false;       // Флаг генерации ответа
+  let currentSessionId = null;    // ID текущей активной сессии
   
-  // Handle chat messages
   socket.on('chat-message', async (data) => {
-    const { sessionId, messages, attachments = [], model = 'gemma3:4b' } = data;
+    const { sessionId, messages, attachments = [] } = data;
     
-    // Generate a unique ID for this request
+    // Генерируем уникальный ID для этого запроса
     const requestId = uuidv4();
     
-    // If already generating, stop
+    // Если уже идет генерация, отменяем ее
     if (isGenerating) {
-      console.log(`Interrupting previous generation for ${socket.id}`);
+      console.log(`Прерывание предыдущей генерации для ${socket.id}`);
       socket.emit('message-complete');
       
-      // Short delay for cleanup
+      // Небольшая задержка для обработки завершения
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     
-    // Set new request ID and session
+    // Устанавливаем новый ID запроса и сессии
     currentRequestId = requestId;
     currentSessionId = sessionId;
     isGenerating = true;
     
-    console.log(`Starting generation for session ${sessionId}, request ${requestId}, model ${model}`);
-    
-    // Log attachment info
-    console.log(`Received attachments: ${attachments.length}`);
-    
-    // Save attachments in session
-    if (attachments && attachments.length > 0) {
-      sessionAttachments.set(sessionId, [...attachments]);
-      console.log(`Saved attachments for session ${sessionId}: ${attachments.length} files`);
-      
-      // Log attachment details
-      attachments.forEach((attachment, index) => {
-        console.log(`Attachment ${index + 1}:`);
-        console.log(`  Name: ${attachment.name}`);
-        console.log(`  Type: ${attachment.type || 'unknown'}`);
-        console.log(`  Size: ${attachment.size || 'unknown'} bytes`);
-        console.log(`  Has content: ${attachment.content ? 'Yes' : 'No'}`);
-      });
-    } else if (sessionAttachments.has(sessionId)) {
-      // Reuse previous attachments from session
-      console.log(`Reusing attachments from session ${sessionId}`);
-    } else {
-      console.log(`No attachments received`);
-    }
+    console.log(`Начало генерации для сессии ${sessionId}, запрос ${requestId}`);
     
     try {
-      // Prepare attachments for processing
-      let processedAttachments = attachments;
-      
-      // If no attachments but we have saved ones, use those
-      if (attachments.length === 0 && sessionAttachments.has(sessionId)) {
-        processedAttachments = sessionAttachments.get(sessionId);
-      }
-      
-      // Check for duplicate files
-      const duplicateChecks = [];
-      
-      for (const attachment of processedAttachments) {
+      // Обработка загруженных файлов (если есть)
+      const processedAttachments = attachments.map(attachment => {
         if (attachment.content) {
-          const contentHash = documentProcessor.calculateContentHash(attachment.content);
-          const existingFile = await fileManager.findFileByHash(contentHash);
-          
-          if (existingFile) {
-            duplicateChecks.push({
-              fileName: attachment.name,
-              isDuplicate: true,
-              existingFileName: existingFile.fileName
-            });
-            
-            // Notify client about duplicate
-            socket.emit('file-status', {
-              fileName: attachment.name,
-              status: 'duplicate',
-              existingFileName: existingFile.fileName
-            });
-          } else {
-            duplicateChecks.push({
-              fileName: attachment.name,
-              isDuplicate: false
-            });
-          }
+          return {
+            ...attachment,
+            content: attachment.content
+          };
         }
+        return attachment;
+      });
+      
+      // Проверяем и сохраняем вложения в правильные директории
+      if (processedAttachments.length > 0) {
+        console.log(`Received attachments: ${processedAttachments.length}`);
+        
+        // Сохраняем вложения в директории content и metadata
+        const savedAttachments = processedAttachments.map((attachment, index) => {
+          const fileId = uuidv4();
+          const contentPath = path.join(contentDir, fileId);
+          const metadataPath = path.join(metadataDir, `${fileId}.json`);
+          
+          // Если есть содержимое, сохраняем в файл
+          if (attachment.content) {
+            fs.writeFileSync(contentPath, attachment.content);
+            
+            // Сохраняем метаданные
+            const metadata = {
+              id: fileId,
+              name: attachment.name,
+              size: attachment.size,
+              type: attachment.type,
+              sessionId: sessionId,
+              uploadedAt: new Date().toISOString()
+            };
+            
+            fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+            
+            console.log(`Attachment ${index + 1}:`);
+            console.log(`  Name: ${attachment.name}`);
+            console.log(`  Type: ${attachment.type}`);
+            console.log(`  Size: ${attachment.size} bytes`);
+            console.log(`  Has content: Yes`);
+            console.log(`  Saved to: ${contentPath}`);
+            console.log(`  Metadata: ${metadataPath}`);
+          }
+          
+          return {
+            ...attachment,
+            id: fileId,
+            contentPath,
+            metadataPath
+          };
+        });
+        
+        console.log(`Saved attachments for session ${sessionId}: ${savedAttachments.length} files`);
       }
       
-      if (duplicateChecks.some(check => check.isDuplicate)) {
-        console.log('Duplicate files detected:', duplicateChecks.filter(c => c.isDuplicate));
-      }
-      
-      // Stream response from model
+      // Стримим ответ от модели
       await llmService.streamResponse({
         messages,
         attachments: processedAttachments,
-        model,
         onChunk: (chunk) => {
-          // Only send if this is the current request and still generating
+          // Отправляем чанк только если это текущий запрос и генерация активна
           if (isGenerating && currentRequestId === requestId) {
             socket.emit('message-chunk', chunk);
           }
         },
         onComplete: () => {
-          // Only complete if this is the current request
+          // Завершаем только если это текущий запрос
           if (currentRequestId === requestId) {
-            console.log(`Completed generation for request ${requestId}`);
+            console.log(`Завершение генерации для запроса ${requestId}`);
             socket.emit('message-complete');
             isGenerating = false;
           }
         },
         onError: (error) => {
-          console.error(`Error generating for request ${requestId}:`, error);
-          // Only report error if this is the current request
+          console.error(`Ошибка при генерации для запроса ${requestId}:`, error);
+          // Сообщаем об ошибке только если это текущий запрос
           if (currentRequestId === requestId) {
-            socket.emit('error', 'An error occurred while getting a response from the model');
+            socket.emit('error', 'Произошла ошибка при получении ответа от модели');
             isGenerating = false;
           }
         }
       });
     } catch (error) {
-      console.error(`Error processing request ${requestId}:`, error);
+      console.error(`Ошибка при обработке запроса ${requestId}:`, error);
       if (currentRequestId === requestId) {
-        socket.emit('error', 'An error occurred while processing the message');
+        socket.emit('error', 'Произошла ошибка при обработке сообщения');
         isGenerating = false;
       }
     }
   });
   
-  // Knowledge base operations
-  socket.on('kb-get-documents', async () => {
-    try {
-      const documents = await fileManager.getAllFileMeta();
-      socket.emit('kb-documents', { documents });
-    } catch (error) {
-      console.error('Error getting knowledge base documents:', error);
-      socket.emit('kb-error', { message: 'Failed to get knowledge base documents' });
-    }
-  });
-  
-  socket.on('kb-delete-document', async (data) => {
-    try {
-      const { documentId } = data;
-      const success = await llmService.deleteDocument(documentId);
-      
-      if (success) {
-        socket.emit('kb-document-deleted', { documentId });
-      } else {
-        socket.emit('kb-error', { message: 'Document not found or could not be deleted' });
-      }
-    } catch (error) {
-      console.error('Error deleting document:', error);
-      socket.emit('kb-error', { message: 'Failed to delete document' });
-    }
-  });
-  
-  // Stop generation
   socket.on('stop-generation', (data) => {
-    console.log(`Request to stop generation from client ${socket.id} for session ${data?.sessionId || 'not specified'}`);
+    console.log(`Запрос на остановку генерации от клиента ${socket.id} для сессии ${data?.sessionId || 'не указана'}`);
     
     if (isGenerating) {
-      console.log('Stopping generation');
+      console.log('Остановка генерации');
       isGenerating = false;
       socket.emit('message-complete');
     } else {
-      console.log('Generation already stopped or not running');
+      console.log('Генерация уже остановлена или не запущена');
     }
   });
   
-  // Change session
   socket.on('change-session', (data) => {
-    console.log(`Client ${socket.id} changed session to ${data.sessionId}`);
+    console.log(`Клиент ${socket.id} сменил сессию на ${data.sessionId}`);
     
-    // If generating for a different session, stop
+    // Если идет генерация для другой сессии, останавливаем ее
     if (isGenerating && currentSessionId !== data.sessionId) {
-      console.log(`Stopping generation when changing from session ${currentSessionId} to ${data.sessionId}`);
+      console.log(`Остановка генерации при смене сессии с ${currentSessionId} на ${data.sessionId}`);
       isGenerating = false;
       socket.emit('message-complete');
     }
     
-    // Update current session
+    // Обновляем текущую сессию
     currentSessionId = data.sessionId;
   });
   
-  // Disconnect
   socket.on('disconnect', () => {
-    console.log(`Client disconnected: ${socket.id}`);
+    console.log(`Клиент отключился: ${socket.id}`);
+    // Очищаем состояние при отключении
     isGenerating = false;
     currentRequestId = null;
     currentSessionId = null;
   });
 });
 
-// Start server
+// Запуск сервера
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`API available at http://localhost:${PORT}/api`);
-  console.log(`Socket.IO available at http://localhost:${PORT}`);
-  
-  // Print vector store stats on startup
-  const vectorStats = vectorStore.getStats();
-  console.log('Vector store stats:', vectorStats);
-  
-  // Check vector store integrity
-  vectorStore.checkAndRepairVectorStore();
+  console.log(`Сервер запущен на порту ${PORT}`);
+  console.log(`API доступен по адресу http://localhost:${PORT}/api`);
+  console.log(`Socket.IO доступен по адресу http://localhost:${PORT}`);
+  console.log(`Директории для хранения данных:`);
+  console.log(`  Uploads: ${uploadDir}`);
+  console.log(`  Content: ${contentDir}`);
+  console.log(`  Metadata: ${metadataDir}`);
+  console.log(`  Vectors: ${vectorsDir}`);
 });
