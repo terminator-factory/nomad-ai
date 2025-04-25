@@ -110,6 +110,41 @@ async function processAttachments(attachments) {
 }
 
 /**
+ * Get file content for direct inclusion in prompt
+ * @param {string} documentId - Document ID
+ * @returns {Promise<string|null>} - File content or null if not found
+ */
+async function getFileContentForPrompt(documentId) {
+  try {
+    // Try to get content directly from file manager
+    const content = await fileManager.getFileContent(documentId);
+    if (content) {
+      return content;
+    }
+    
+    // If not found, try to get metadata and read from disk
+    const metadata = await fileManager.getFileMeta(documentId);
+    if (!metadata) {
+      console.warn(`No metadata found for document: ${documentId}`);
+      return null;
+    }
+    
+    // Get file path and read content
+    const contentPath = path.join(__dirname, '../../data/content', `${documentId}.txt`);
+    
+    if (fs.existsSync(contentPath)) {
+      return fs.readFileSync(contentPath, 'utf-8');
+    }
+    
+    console.warn(`Content file not found for document: ${documentId}`);
+    return null;
+  } catch (error) {
+    console.error(`Error getting content for document ${documentId}:`, error);
+    return null;
+  }
+}
+
+/**
  * Retrieve relevant context from the knowledge base
  * @param {string} query - Query text
  * @param {string} chatHistory - Formatted chat history
@@ -126,6 +161,73 @@ async function retrieveContext(query, chatHistory) {
   
   if (!searchResult.success || !searchResult.results || searchResult.results.length === 0) {
     console.log('No relevant context found in knowledge base');
+    
+    // Even though we didn't find chunks, try to find relevant files by name
+    const allDocuments = await fileManager.getAllFileMeta();
+    
+    // Look for files that might match the query by name
+    const relevantFiles = allDocuments.filter(doc => {
+      return doc.fileName.toLowerCase().includes(query.toLowerCase()) || 
+             (query.toLowerCase().includes(doc.fileName.toLowerCase()));
+    });
+    
+    if (relevantFiles.length > 0) {
+      console.log(`Found ${relevantFiles.length} files by name matching query`);
+      
+      let contextText = '### Relevant Information from Files ###\n\n';
+      const sources = [];
+      
+      // Include content from relevant files
+      for (const file of relevantFiles.slice(0, 3)) { // Limit to 3 files
+        const content = await getFileContentForPrompt(file.id);
+        
+        if (content) {
+          contextText += `File: ${file.fileName}\n`;
+          
+          // For CSV files, try to show structured content
+          if (file.fileType.includes('csv') || file.fileName.endsWith('.csv')) {
+            const lines = content.split('\n');
+            const headers = lines[0];
+            
+            contextText += `Headers: ${headers}\n`;
+            contextText += `Sample Content (first 10 rows):\n`;
+            
+            for (let i = 0; i < Math.min(10, lines.length); i++) {
+              contextText += `${lines[i]}\n`;
+            }
+          } else {
+            // For other text files
+            contextText += `Content (excerpt):\n${content.substring(0, 3000)}`;
+            if (content.length > 3000) {
+              contextText += "\n... (content truncated)";
+            }
+          }
+          
+          contextText += '\n\n';
+          
+          sources.push({
+            id: file.id,
+            fileName: file.fileName,
+            similarity: 'Direct match by name'
+          });
+        }
+      }
+      
+      // Add source summary at the end
+      if (sources.length > 0) {
+        contextText += '### Sources ###\n';
+        sources.forEach((source, index) => {
+          contextText += `[${index + 1}] ${source.fileName} (Match: ${source.similarity})\n`;
+        });
+        
+        return {
+          hasContext: true,
+          contextText,
+          sources
+        };
+      }
+    }
+    
     return {
       hasContext: false,
       contextText: '',
@@ -162,6 +264,40 @@ async function retrieveContext(query, chatHistory) {
         fileName: result.metadata.fileName || 'Unknown file',
         similarity: result.score ? (result.score * 100).toFixed(1) + '%' : 'Unknown'
       });
+    }
+  }
+  
+  // If we have document IDs but not enough context from chunks, 
+  // try to include the direct file content
+  if (includedDocIds.size > 0 && searchResult.results.length < 3) {
+    for (const docId of includedDocIds) {
+      const content = await getFileContentForPrompt(docId);
+      const metadata = await fileManager.getFileMeta(docId);
+      
+      if (content && metadata) {
+        contextText += `\nAdditional content from file ${metadata.fileName}:\n`;
+        
+        // For CSV files, show more structured content
+        if (metadata.fileType.includes('csv') || metadata.fileName.endsWith('.csv')) {
+          const lines = content.split('\n');
+          const headers = lines[0];
+          
+          contextText += `Headers: ${headers}\n`;
+          contextText += `Sample Content (first 15 rows):\n`;
+          
+          for (let i = 0; i < Math.min(15, lines.length); i++) {
+            contextText += `${lines[i]}\n`;
+          }
+        } else {
+          // For other text files
+          contextText += `Content (excerpt):\n${content.substring(0, 2000)}`;
+          if (content.length > 2000) {
+            contextText += "\n... (content truncated)";
+          }
+        }
+        
+        contextText += '\n\n';
+      }
     }
   }
   
@@ -215,6 +351,8 @@ const formatPrompt = async (messages, attachments = []) => {
   
   // Retrieve relevant context using RAG
   let retrievedContext = null;
+  let fileContents = '';
+  
   if (lastUserContent) {
     retrievedContext = await retrieveContext(lastUserContent, chatHistoryText);
     console.log(`RAG context retrieved: ${retrievedContext.hasContext ? 'Yes' : 'No'}, Sources: ${retrievedContext.sources.length}`);
@@ -251,9 +389,9 @@ const formatPrompt = async (messages, attachments = []) => {
     }
   });
   
-  // Add information about new files
+  // For CSV files, include direct content
   if (attachments && attachments.length > 0) {
-    prompt += `### НОВЫЕ ЗАГРУЖЕННЫЕ ФАЙЛЫ ###\n`;
+    prompt += `### ЗАГРУЖЕННЫЕ ФАЙЛЫ ###\n`;
     
     for (const file of attachments) {
       const fileName = file.name || 'Unnamed file';
@@ -261,6 +399,48 @@ const formatPrompt = async (messages, attachments = []) => {
       const fileSize = formatFileSize(file.size);
       
       prompt += `Файл: ${fileName} (${fileType}, ${fileSize})\n`;
+      
+      // For CSV files, include the content directly
+      if (isCSVFile(file) && file.content) {
+        try {
+          const lines = file.content.split('\n');
+          const linesCount = lines.length;
+          const firstLine = lines[0] || '';
+          const columnCount = firstLine.split(',').length;
+          
+          // Add file details
+          prompt += `CSV файл: ${linesCount} строк, ${columnCount} столбцов\n`;
+          prompt += `Заголовки: ${firstLine}\n\n`;
+          
+          // Include actual content (first 20 lines or all if less than 20)
+          prompt += "Содержимое CSV файла (первые строки):\n";
+          const linesToShow = Math.min(20, linesCount);
+          
+          for (let i = 0; i < linesToShow; i++) {
+            prompt += `${lines[i]}\n`;
+          }
+          
+          if (linesCount > linesToShow) {
+            prompt += `... (и еще ${linesCount - linesToShow} строк)\n`;
+          }
+          
+          prompt += '\n';
+          
+          // Track that we've included file content
+          fileContents = file.content;
+        } catch (error) {
+          console.error('Error processing CSV content:', error);
+        }
+      } else if (file.content && file.content.length < 5000) {
+        // For other text files that aren't too large, include content
+        prompt += "Содержимое файла:\n";
+        prompt += file.content.substring(0, 3000) + "\n";
+        if (file.content.length > 3000) {
+          prompt += "... (содержимое обрезано для краткости)\n";
+        }
+        prompt += "\n";
+        fileContents = file.content;
+      }
       
       // Check for duplicate content
       if (file.content) {
@@ -272,29 +452,26 @@ const formatPrompt = async (messages, attachments = []) => {
           prompt += `Примечание: Этот файл имеет идентичное содержимое с ранее загруженным файлом "${existingFile.fileName}"\n`;
         }
       }
-      
-      // Special handling for CSV files
-      if (isCSVFile(file) && file.content) {
-        try {
-          const lines = file.content.split('\n');
-          const linesCount = lines.length;
-          const firstLine = lines[0] || '';
-          const columnsCount = firstLine.split(',').length;
-          
-          // Add basic CSV info
-          prompt += `CSV файл: ${linesCount} строк, ${columnsCount} столбцов\n`;
-          prompt += `Заголовки: ${firstLine}\n`;
-        } catch (error) {
-          console.error('Error analyzing CSV:', error);
-        }
-      }
     }
     
     prompt += `### КОНЕЦ СПИСКА ФАЙЛОВ ###\n\n`;
   }
   
+  // Special handling for document-specific queries
+  if (fileContents && lastUserContent) {
+    const lowerQuery = lastUserContent.toLowerCase();
+    
+    // Check if this is a request for rows or table data
+    if ((lowerQuery.includes('строк') || lowerQuery.includes('row') || 
+        lowerQuery.includes('таблиц') || lowerQuery.includes('table')) && 
+        isCSVFile(attachments[0])) {
+      
+      prompt += "ВАЖНО: Пользователь запрашивает данные из CSV файла. Используй ТОЛЬКО реальные данные из приведенного выше содержимого файла, не выдумывай информацию. Если запрос касается данных вне предоставленного содержимого, укажи, что у тебя есть только часть данных.\n\n";
+    }
+  }
+  
   // General reminders
-  prompt += `НАПОМИНАНИЕ: Дай информативный и точный ответ на вопрос пользователя, опираясь на содержимое загруженных файлов.\n\n`;
+  prompt += `НАПОМИНАНИЕ: Дай информативный и точный ответ на вопрос пользователя, опираясь на содержимое загруженных файлов. НИКОГДА не придумывай данные, которых нет в файлах.\n\n`;
   
   // Repeat the current user question
   if (lastUserMessage) {

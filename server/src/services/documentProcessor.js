@@ -69,15 +69,221 @@ function splitIntoChunks(text, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP) 
 }
 
 /**
- * Process a document for RAG
- * @param {Object} file - File object with content
- * @returns {Object} - Processing result including chunks and metadata
+ * Process a CSV file for better content retrieval
+ * @param {string} content - CSV content
+ * @returns {Object} - Processed CSV information
  */
-async function processDocument(file) {
+function processCSVContent(content) {
+  if (!content || typeof content !== 'string') {
+    return {
+      success: false,
+      error: 'Invalid content',
+      rowCount: 0,
+      columnCount: 0,
+      headers: [],
+      sample: []
+    };
+  }
+  
+  try {
+    // Split into lines and filter out empty lines
+    const lines = content.split('\n').filter(line => line.trim().length > 0);
+    
+    if (lines.length === 0) {
+      return {
+        success: false,
+        error: 'Empty CSV',
+        rowCount: 0,
+        columnCount: 0,
+        headers: [],
+        sample: []
+      };
+    }
+    
+    // Get headers from first line
+    const headers = parseCSVLine(lines[0]);
+    
+    // Parse a sample of data rows (up to 20)
+    const sampleSize = Math.min(20, lines.length - 1);
+    const sample = [];
+    
+    for (let i = 1; i <= sampleSize; i++) {
+      if (i < lines.length) {
+        const parsedLine = parseCSVLine(lines[i]);
+        sample.push(parsedLine);
+      }
+    }
+    
+    return {
+      success: true,
+      rowCount: lines.length - 1, // Exclude header row
+      columnCount: headers.length,
+      headers,
+      sample,
+      content: content // Keep original content for reference
+    };
+  } catch (error) {
+    console.error('Error processing CSV content:', error);
+    return {
+      success: false,
+      error: error.message,
+      rowCount: 0,
+      columnCount: 0,
+      headers: [],
+      sample: []
+    };
+  }
+}
+
+/**
+ * Parse a CSV line, handling quoted fields properly
+ * @param {string} line - CSV line to parse
+ * @returns {Array<string>} - Array of field values
+ */
+function parseCSVLine(line) {
+  if (!line) return [];
+  
+  const result = [];
+  let currentField = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = i < line.length - 1 ? line[i + 1] : null;
+    
+    if (char === '"' && !inQuotes) {
+      // Start of quoted field
+      inQuotes = true;
+    } else if (char === '"' && inQuotes) {
+      if (nextChar === '"') {
+        // Escaped quote inside quoted field
+        currentField += '"';
+        i++; // Skip the next quote
+      } else {
+        // End of quoted field
+        inQuotes = false;
+      }
+    } else if (char === ',' && !inQuotes) {
+      // End of field
+      result.push(currentField);
+      currentField = '';
+    } else {
+      // Regular character
+      currentField += char;
+    }
+  }
+  
+  // Add the last field
+  result.push(currentField);
+  
+  return result;
+}
+
+/**
+ * Split text into chunks with special handling for CSV
+ * @param {string} text - Document text
+ * @param {string} fileType - File type 
+ * @param {number} chunkSize - Size of each chunk
+ * @param {number} overlap - Overlap between chunks
+ * @returns {Array<string>} - Array of text chunks
+ */
+function splitIntoChunksWithFileType(text, fileType, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP) {
+  if (!text || typeof text !== 'string') {
+    console.warn('Invalid text for chunking');
+    return [];
+  }
+  
+  // For CSV files, we'll use a different chunking strategy
+  if (fileType && (fileType.includes('csv') || fileType.endsWith('.csv'))) {
+    return splitCSVIntoChunks(text, chunkSize, overlap);
+  }
+  
+  // Default chunking for other file types
+  return splitIntoChunks(text, chunkSize, overlap);
+}
+
+/**
+ * Split CSV into meaningful chunks based on rows
+ * @param {string} csvText - CSV content
+ * @param {number} chunkSize - Target chunk size
+ * @param {number} overlap - Chunk overlap
+ * @returns {Array<string>} - Array of chunks
+ */
+function splitCSVIntoChunks(csvText, chunkSize, overlap) {
+  try {
+    // Split into lines
+    const lines = csvText.split('\n').filter(line => line.trim() !== '');
+    
+    if (lines.length <= 1) {
+      // Just header or empty file
+      return [csvText];
+    }
+    
+    const headers = lines[0];
+    const dataRows = lines.slice(1);
+    
+    // Calculate how many rows to include per chunk
+    const avgRowLength = dataRows.reduce((sum, row) => sum + row.length, 0) / dataRows.length;
+    const rowsPerChunk = Math.max(1, Math.floor(chunkSize / avgRowLength));
+    const rowsOverlap = Math.max(1, Math.floor(overlap / avgRowLength));
+    
+    const chunks = [];
+    let i = 0;
+    
+    while (i < dataRows.length) {
+      // Calculate end position
+      const end = Math.min(i + rowsPerChunk, dataRows.length);
+      
+      // Create chunk with headers + selected rows
+      const chunkRows = [headers, ...dataRows.slice(i, end)];
+      chunks.push(chunkRows.join('\n'));
+      
+      // Move to next chunk position, accounting for overlap
+      i += rowsPerChunk - rowsOverlap;
+      
+      // If we're near the end, avoid tiny chunks
+      if (i + rowsPerChunk - rowsOverlap >= dataRows.length) {
+        break;
+      }
+    }
+    
+    return chunks;
+  } catch (error) {
+    console.error('Error splitting CSV into chunks:', error);
+    
+    // Fall back to standard chunking
+    return splitIntoChunks(csvText, chunkSize, overlap);
+  }
+}
+
+// Update the processDocument function to use the new CSV-aware chunking
+const originalProcessDocument = processDocument;
+
+async function processDocument(file, forceProcess = false) {
   try {
     console.log(`Processing document: ${file.name} (${file.size} bytes)`);
     
-    // Validate file object
+    // Check if this is a CSV file
+    const isCSV = file.type === 'text/csv' || file.name.toLowerCase().endsWith('.csv');
+    
+    if (isCSV && file.content) {
+      console.log(`Processing CSV file: ${file.name}`);
+      
+      // Process CSV content for better understanding
+      const csvInfo = processCSVContent(file.content);
+      
+      if (csvInfo.success) {
+        console.log(`CSV file analyzed: ${csvInfo.rowCount} rows, ${csvInfo.columnCount} columns`);
+        
+        // Add CSV info to file object for better context later
+        file.csvInfo = csvInfo;
+      }
+    }
+    
+    // Handle the rest of document processing using the improved chunking method
+    const fileType = file.type || (file.name ? file.name.split('.').pop() : '');
+    
+    // Original validation and duplicate checking
     if (!file || !file.name) {
       return {
         success: false,
@@ -86,7 +292,6 @@ async function processDocument(file) {
       };
     }
     
-    // Ensure we have content to process
     if (!file.content || typeof file.content !== 'string') {
       console.error(`No content provided for file: ${file.name}`);
       return {
@@ -96,12 +301,12 @@ async function processDocument(file) {
       };
     }
     
-    // Generate a content hash to identify duplicate files
+    // Generate content hash
     const contentHash = calculateContentHash(file.content);
     
     // Check if we've already processed this file
     const existingFile = await fileManager.findFileByHash(contentHash);
-    if (existingFile) {
+    if (existingFile && !forceProcess) {
       console.log(`Document with same content already exists: ${existingFile.fileName}`);
       return {
         success: true,
@@ -120,13 +325,23 @@ async function processDocument(file) {
       fileSize: file.size || file.content.length,
       contentHash,
       createdAt: new Date().toISOString(),
-      chunkCount: 0
+      chunkCount: 0,
+      isCSV: isCSV
     };
+    
+    // If it's a CSV, add the CSV info to metadata
+    if (isCSV && file.csvInfo) {
+      metadata.csvInfo = {
+        rowCount: file.csvInfo.rowCount,
+        columnCount: file.csvInfo.columnCount,
+        headers: file.csvInfo.headers.join(',')
+      };
+    }
     
     console.log(`Created metadata for document: ${docId} (${file.name})`);
     
-    // Split content into chunks
-    const chunks = splitIntoChunks(file.content);
+    // Split content into chunks with awareness of file type
+    const chunks = splitIntoChunksWithFileType(file.content, fileType);
     console.log(`Split document into ${chunks.length} chunks`);
     
     // Process each chunk and generate embeddings
