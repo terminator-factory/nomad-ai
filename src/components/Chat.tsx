@@ -1,10 +1,17 @@
-// src/components/Chat.tsx
+// src/components/Chat.tsx - Updated with Knowledge Base integration
 import React, { useState, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { PaperAirplaneIcon, PlusIcon, TrashIcon, StopIcon } from '@heroicons/react/24/solid';
+import { 
+  PaperAirplaneIcon, 
+  PlusIcon, 
+  TrashIcon, 
+  StopIcon,
+  BookOpenIcon
+} from '@heroicons/react/24/solid';
 import ChatMessage from './ChatMessage';
 import FileUpload from './FileUpload';
 import ModelSelector from './ModelSelector';
+import KnowledgeBase from './KnowledgeBase';
 import useChat from '../hooks/useChat';
 import { FileAttachment } from '../types';
 
@@ -16,8 +23,12 @@ const Chat: React.FC = () => {
     currentSessionId,
     sessions,
     attachments,
-    models, // Получаем список моделей из хука
-    selectedModel, // Получаем выбранную модель
+    models, // Available models list
+    selectedModel, // Selected model
+    duplicateFiles, // Duplicate files info
+    knowledgeBaseDocuments,
+    deleteKnowledgeBaseDocument,
+    loadKnowledgeBaseDocuments,
     sendMessage,
     startNewChat,
     loadSession,
@@ -25,12 +36,13 @@ const Chat: React.FC = () => {
     removeAttachment,
     deleteChat,
     stopGeneration,
-    changeModel, // Функция для смены модели
+    changeModel, // Function to change model
     messagesEndRef
   } = useChat();
 
   const [input, setInput] = useState('');
   const [showSidebar, setShowSidebar] = useState(window.innerWidth >= 768);
+  const [showKnowledgeBase, setShowKnowledgeBase] = useState(false);
 
   useEffect(() => {
     const handleResize = () => {
@@ -44,13 +56,13 @@ const Chat: React.FC = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Если идет загрузка, останавливаем генерацию
+    // If loading, stop generation instead
     if (isLoading) {
       stopGeneration();
       return;
     }
 
-    // Иначе отправляем сообщение
+    // Otherwise send message
     if (input.trim() || attachments.length > 0) {
       sendMessage(input);
       setInput('');
@@ -64,13 +76,7 @@ const Chat: React.FC = () => {
     }
   };
 
-  const handleRemoveAttachment = removeAttachment || ((id: string) => {
-    const newAttachments = attachments.filter(file => file.id !== id);
-    // Здесь можно логировать или показывать предупреждение, что функция в хуке не определена
-    console.warn('removeAttachment is not defined in useChat hook');
-  });
-
-  // Функция для задания имени чата из первого сообщения пользователя
+  // Get chat title from first user message
   const getChatTitle = (sessionId: string) => {
     const session = sessions.find(s => s.id === sessionId);
     if (!session) return 'New chat';
@@ -82,6 +88,12 @@ const Chat: React.FC = () => {
     return title.length < firstUserMessage.content.length
       ? title + '...'
       : title;
+  };
+
+  // Open knowledge base
+  const openKnowledgeBase = () => {
+    loadKnowledgeBaseDocuments(); // Refresh data
+    setShowKnowledgeBase(true);
   };
 
   return (
@@ -104,8 +116,9 @@ const Chat: React.FC = () => {
               {sessions.slice().reverse().map((session) => (
                 <div
                   key={session.id}
-                  className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-green-700 ${session.id === currentSessionId ? 'bg-green-700' : ''
-                    }`}
+                  className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-green-700 ${
+                    session.id === currentSessionId ? 'bg-green-700' : ''
+                  }`}
                 >
                   <button
                     onClick={() => loadSession(session.id)}
@@ -114,11 +127,11 @@ const Chat: React.FC = () => {
                     {getChatTitle(session.id)}
                   </button>
 
-                  {/* Кнопка удаления */}
+                  {/* Delete button */}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (window.confirm('Вы уверены, что хотите удалить этот чат?')) {
+                      if (window.confirm('Are you sure you want to delete this chat?')) {
                         deleteChat(session.id);
                       }
                     }}
@@ -129,6 +142,17 @@ const Chat: React.FC = () => {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Knowledge base button in sidebar */}
+          <div className="p-3 border-t border-green-900/50">
+            <button
+              onClick={openKnowledgeBase}
+              className="w-full flex items-center justify-center gap-2 py-2 bg-green-800/50 hover:bg-green-800 text-white rounded-md"
+            >
+              <BookOpenIcon className="h-4 w-4" />
+              <span>Knowledge Base</span>
+            </button>
           </div>
         </div>
       )}
@@ -162,6 +186,17 @@ const Chat: React.FC = () => {
           <div className="font-medium">
             {currentSessionId ? getChatTitle(currentSessionId) : 'New chat'}
           </div>
+          
+          {/* Knowledge base button in header (small screens) */}
+          {!showSidebar && (
+            <button
+              onClick={openKnowledgeBase}
+              className="ml-auto text-gray-400 hover:text-white"
+              title="Knowledge Base"
+            >
+              <BookOpenIcon className="h-5 w-5" />
+            </button>
+          )}
         </div>
 
         {/* Chat messages */}
@@ -169,9 +204,13 @@ const Chat: React.FC = () => {
           {messages.length === 0 && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center max-w-md">
-                <h2 className="text-2xl font-bold mb-2">Как я могу помочь вам сегодня?</h2>
+                <h2 className="text-2xl font-bold mb-2">How can I help you today?</h2>
                 <p className="text-gray-400">
-                  Задайте мне вопрос или попросите рассказать о чем-нибудь интересном.
+                  Ask me a question or upload a file to analyze.
+                </p>
+                <p className="mt-4 text-sm text-gray-500">
+                  <BookOpenIcon className="h-4 w-4 inline mr-1" />
+                  Files you upload will be added to the knowledge base for future reference.
                 </p>
               </div>
             </div>
@@ -184,7 +223,6 @@ const Chat: React.FC = () => {
           {isLoading && (
             <div className="py-4 px-4 flex justify-center">
               <div className="dot-typing"></div>
-              {/* Удаляем кнопку остановки отсюда */}
             </div>
           )}
 
@@ -215,7 +253,9 @@ const Chat: React.FC = () => {
             <FileUpload
               attachments={attachments}
               onFileUpload={handleFileUpload}
-              onRemoveAttachment={handleRemoveAttachment}
+              onRemoveAttachment={removeAttachment}
+              duplicateFiles={duplicateFiles}
+              onOpenKnowledgeBase={openKnowledgeBase}
             />
           </div>
 
@@ -224,18 +264,19 @@ const Chat: React.FC = () => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Напишите сообщение..."
+              placeholder="Type a message..."
               className="w-full rounded-md bg-input-bg border border-gray-700 focus:border-button-primary focus:ring-1 focus:ring-button-primary py-3 pl-4 pr-12 text-white resize-none focus:outline-none"
               maxRows={5}
               minRows={1}
             />
             <button
               type="submit"
-              className={`absolute right-2 bottom-2.5 rounded-md p-1.5 transition-colors ${isLoading
-                ? 'bg-red-600 hover:bg-red-700 text-white'
-                : 'text-gray-400 hover:bg-gray-700 hover:text-white'
-                }`}
-              title={isLoading ? "Остановить генерацию" : "Отправить сообщение"}
+              className={`absolute right-2 bottom-2.5 rounded-md p-1.5 transition-colors ${
+                isLoading
+                  ? 'bg-red-600 hover:bg-red-700 text-white'
+                  : 'text-gray-400 hover:bg-gray-700 hover:text-white'
+              }`}
+              title={isLoading ? "Stop generation" : "Send message"}
             >
               {isLoading ? (
                 <StopIcon className="h-5 w-5" />
@@ -246,6 +287,13 @@ const Chat: React.FC = () => {
           </form>
         </div>
       </div>
+      
+      {/* Knowledge Base modal */}
+      {showKnowledgeBase && (
+        <KnowledgeBase 
+          onClose={() => setShowKnowledgeBase(false)} 
+        />
+      )}
     </div>
   );
 };

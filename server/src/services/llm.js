@@ -1,8 +1,16 @@
 // server/src/services/llm.js
 const axios = require('axios');
+const documentProcessor = require('./documentProcessor');
+const { countTokens, truncateToTokenCount } = require('./tokenizer');
+const fileManager = require('./fileManager');
 
 // URL для доступа к модели в Docker
 const LLM_API_URL = process.env.LLM_API_URL || 'http://localhost:11434/api/generate';
+
+// Maximum token context length to maintain
+const MAX_CONTEXT_LENGTH = 6000;
+const MAX_RETRIEVED_CHUNKS = 10;
+const CHUNK_TOKEN_LIMIT = 500;
 
 // Доступные модели
 const AVAILABLE_MODELS = [
@@ -39,120 +47,144 @@ const getAvailableModels = () => {
 };
 
 /**
- * Анализирует CSV файл и возвращает информацию о его структуре
- * @param {string} content - Содержимое CSV файла
- * @returns {Object} - Информация о структуре CSV
+ * Process attachments and store them in the knowledge base
+ * @param {Array} attachments - File attachments
+ * @returns {Promise<Array>} - Processing results for each attachment
  */
-function analyzeCSV(content) {
-  try {
-    const lines = content.trim().split('\n');
-    const totalRows = lines.length;
-    
-    // Если файл пустой или содержит только заголовок
-    if (totalRows <= 1) {
-      return {
-        success: true,
-        rowCount: totalRows,
-        columnCount: totalRows > 0 ? lines[0].split(',').length : 0,
-        headers: totalRows > 0 ? lines[0].split(',').map(h => h.trim()) : [],
-        firstRow: totalRows > 1 ? lines[1] : null,
-        lastRow: totalRows > 1 ? lines[totalRows - 1] : null
-      };
-    }
-    
-    // Получаем заголовки и определяем количество столбцов
-    const headers = lines[0].split(',').map(h => h.trim());
-    const columnCount = headers.length;
-    
-    // Получаем первую и последнюю строки данных
-    const firstRow = lines[1];
-    const lastRow = lines[totalRows - 1];
-    
-    // Получаем все уникальные значения первого столбца
-    const firstColumnValues = [];
-    for (let i = 1; i < totalRows; i++) {
-      const columns = lines[i].split(',');
-      if (columns.length > 0) {
-        firstColumnValues.push(columns[0].trim());
-      }
-    }
-    
-    return {
-      success: true,
-      rowCount: totalRows,
-      columnCount,
-      headers,
-      firstRow,
-      lastRow,
-      firstColumnValues: firstColumnValues.slice(0, 20) // Ограничиваем до 20 значений
-    };
-  } catch (error) {
-    console.error('Ошибка при анализе CSV:', error);
-    return {
-      success: false,
-      error: error.message
-    };
+async function processAttachments(attachments) {
+  if (!attachments || attachments.length === 0) {
+    return [];
   }
+  
+  console.log(`Processing ${attachments.length} attachments for RAG`);
+  
+  const results = [];
+  
+  for (const file of attachments) {
+    if (!file.content) {
+      results.push({
+        fileName: file.name,
+        success: false,
+        message: 'No content provided for file'
+      });
+      continue;
+    }
+    
+    // Process document for RAG
+    const processResult = await documentProcessor.processDocument(file);
+    results.push({
+      fileName: file.name,
+      success: processResult.success,
+      isDuplicate: processResult.isDuplicate,
+      documentId: processResult.documentId,
+      message: processResult.message
+    });
+  }
+  
+  return results;
 }
 
 /**
- * Обрабатывает CSV, упрощая данные для модели
- * @param {string} content - Содержимое CSV файла
- * @returns {string} - Форматированное описание CSV
+ * Retrieve relevant context from the knowledge base
+ * @param {string} query - Query text
+ * @param {string} chatHistory - Formatted chat history
+ * @returns {Promise<Object>} - Retrieved context and metadata
  */
-function processCSVForModel(content) {
-  const csvInfo = analyzeCSV(content);
-  if (!csvInfo.success) {
-    return `CSV файл не удалось проанализировать: ${csvInfo.error}\n`;
+async function retrieveContext(query, chatHistory) {
+  // Combine the latest query with chat history for better context
+  const searchText = query;
+  
+  // Search for relevant chunks
+  const searchResult = await documentProcessor.searchRelevantChunks(searchText, MAX_RETRIEVED_CHUNKS);
+  
+  if (!searchResult.success || !searchResult.results || searchResult.results.length === 0) {
+    return {
+      hasContext: false,
+      contextText: '',
+      sources: []
+    };
   }
   
-  let result = '';
+  // Format the retrieved chunks
+  let contextText = '### Relevant Information from Knowledge Base ###\n\n';
+  const sources = [];
   
-  // Базовая информация о файле
-  result += `=== ИНФОРМАЦИЯ О CSV ФАЙЛЕ ===\n`;
-  result += `Всего строк: ${csvInfo.rowCount}\n`;
-  result += `Всего столбцов: ${csvInfo.columnCount}\n`;
-  result += `Заголовки: ${csvInfo.headers.join(', ')}\n\n`;
+  // Track included document IDs to avoid repeating source information
+  const includedDocIds = new Set();
   
-  // Первая строка данных
-  if (csvInfo.firstRow) {
-    result += `Первая строка данных:\n${csvInfo.firstRow}\n\n`;
+  for (const result of searchResult.results) {
+    // Skip if no text or metadata
+    if (!result.text || !result.metadata) {
+      continue;
+    }
+    
+    // Add chunk text with truncation to avoid excessive token usage
+    const truncatedText = truncateToTokenCount(result.text, CHUNK_TOKEN_LIMIT);
+    contextText += `${truncatedText}\n\n`;
+    
+    // Add source information if not already included
+    const docId = result.metadata.id;
+    if (docId && !includedDocIds.has(docId)) {
+      includedDocIds.add(docId);
+      
+      sources.push({
+        id: docId,
+        fileName: result.metadata.fileName || 'Unknown file',
+        similarity: result.score ? (result.score * 100).toFixed(1) + '%' : 'Unknown'
+      });
+    }
   }
   
-  // Последняя строка данных
-  if (csvInfo.lastRow) {
-    result += `Последняя строка данных:\n${csvInfo.lastRow}\n\n`;
+  // Add source summary at the end
+  if (sources.length > 0) {
+    contextText += '### Sources ###\n';
+    sources.forEach((source, index) => {
+      contextText += `[${index + 1}] ${source.fileName} (Relevance: ${source.similarity})\n`;
+    });
   }
   
-  // Примеры значений из первого столбца
-  if (csvInfo.firstColumnValues && csvInfo.firstColumnValues.length > 0) {
-    result += `Примеры значений из первого столбца: ${csvInfo.firstColumnValues.join(', ')}\n\n`;
-  }
-  
-  return result;
+  return {
+    hasContext: true,
+    contextText,
+    sources
+  };
 }
 
 /**
- * Форматирует сообщения в формат для запроса к API модели
+ * Форматирует сообщения в формат для запроса к API модели с учетом RAG
  * @param {Array} messages - История сообщений
  * @param {Array} attachments - Прикрепленные файлы
- * @returns {string} - Форматированный запрос для модели
+ * @returns {Promise<string>} - Форматированный запрос для модели
  */
-const formatPrompt = (messages, attachments = []) => {
+const formatPrompt = async (messages, attachments = []) => {
   console.log(`Форматирование запроса: ${messages.length} сообщений, ${attachments.length} вложений`);
   
-  // Получаем последнее сообщение пользователя
-  const lastUserMessage = messages.filter(msg => msg.role === 'user').pop();
-  const lastUserContent = lastUserMessage ? lastUserMessage.content.trim().toLowerCase() : '';
+  // Process any new attachments for RAG
+  if (attachments && attachments.length > 0) {
+    const processResults = await processAttachments(attachments);
+    console.log('Attachment processing results:', processResults);
+  }
   
-  // Определяем специальные типы запросов
-  const askingAboutRows = /сколько.*строк/i.test(lastUserContent) || /кол.*строк/i.test(lastUserContent);
-  const askingAboutColumns = /сколько.*столб/i.test(lastUserContent) || /кол.*столб/i.test(lastUserContent);
-  const askingAboutBoth = (askingAboutRows && askingAboutColumns) || /строк.*столб/i.test(lastUserContent);
-  const askingAboutFirstRow = /перв.*строк/i.test(lastUserContent);
-  const askingAboutLastRow = /послед.*строк/i.test(lastUserContent);
-  const askingAboutFirstColumn = /перв.*столб/i.test(lastUserContent);
-  const isMathQuestion = /сколько будет/i.test(lastUserContent) || /\d+\s*[+\-*/]\s*\d+/.test(lastUserContent);
+  // Получаем последнее сообщение пользователя для RAG поиска
+  const lastUserMessage = messages.filter(msg => msg.role === 'user').pop();
+  const lastUserContent = lastUserMessage ? lastUserMessage.content.trim() : '';
+  
+  // Format chat history for context retrieval
+  let chatHistoryText = messages.slice(-5).map(msg => {
+    if (msg.role === 'user') {
+      return `User: ${msg.content}`;
+    } else if (msg.role === 'assistant') {
+      return `Assistant: ${msg.content}`;
+    }
+    return '';
+  }).join('\n\n');
+  
+  // Retrieve relevant context using RAG
+  let retrievedContext = null;
+  if (lastUserContent) {
+    retrievedContext = await retrieveContext(lastUserContent, chatHistoryText);
+    console.log(`RAG context retrieved: ${retrievedContext.hasContext ? 'Yes' : 'No'}, Sources: ${retrievedContext.sources.length}`);
+  }
   
   // Форматируем промпт, начиная с системного сообщения
   let prompt = '';
@@ -160,23 +192,18 @@ const formatPrompt = (messages, attachments = []) => {
   // Базовые системные инструкции
   prompt += `Ты дружелюбный и полезный ассистент. Ты можешь анализировать содержимое файлов и отвечать на вопросы пользователя.\n`;
   
-  // Специальные инструкции в зависимости от типа вопроса
-  if (askingAboutBoth) {
-    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о количестве строк и столбцов. Ответь только в формате: "В файле X строк и Y столбцов."\n\n`;
-  } else if (askingAboutRows) {
-    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о количестве строк. Ответь только числом строк.\n\n`;
-  } else if (askingAboutColumns) {
-    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о количестве столбцов. Ответь только числом столбцов.\n\n`;
-  } else if (askingAboutFirstRow) {
-    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о первой строке. Покажи содержимое первой строки данных (не заголовка).\n\n`;
-  } else if (askingAboutLastRow) {
-    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о последней строке. Покажи содержимое последней строки данных.\n\n`;
-  } else if (askingAboutFirstColumn) {
-    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь спрашивает о первом столбце. Покажи примеры значений из первого столбца.\n\n`;
-  } else if (isMathQuestion) {
-    prompt += `СПЕЦИАЛЬНЫЕ ИНСТРУКЦИИ: Пользователь задал математический вопрос. Ответь только результатом вычисления.\n\n`;
-  } else {
-    prompt += `ИНСТРУКЦИИ: Отвечай только на вопрос пользователя. Не повторяй содержимое файлов без необходимости.\n\n`;
+  // Indicate RAG capabilities
+  prompt += `У тебя есть доступ к базе знаний документов, которые были загружены пользователями. Когда отвечаешь на вопросы, используй информацию из этой базы знаний, если она релевантна вопросу.\n\n`;
+  
+  // Общие инструкции вместо специфичных
+  prompt += `ИНСТРУКЦИИ: Внимательно анализируй содержимое файлов и отвечай на вопросы пользователя, используя полученную информацию. Старайся давать полные и информативные ответы, основываясь на данных из файлов.\n\n`;
+  
+  // Add RAG context if available
+  if (retrievedContext && retrievedContext.hasContext) {
+    prompt += retrievedContext.contextText + '\n\n';
+    
+    // Add specific instructions for using retrieved context
+    prompt += `ВАЖНО: Используй информацию выше для ответа на вопрос пользователя. Если информация релевантна, ссылайся на источники в своем ответе, используя номера в квадратных скобках, например [1].\n\n`;
   }
   
   // Добавляем историю сообщений
@@ -190,9 +217,9 @@ const formatPrompt = (messages, attachments = []) => {
     }
   });
   
-  // Добавляем информацию о файлах
+  // Добавляем информацию о новых файлах
   if (attachments && attachments.length > 0) {
-    prompt += `### ДАННЫЕ ДЛЯ АНАЛИЗА ###\n`;
+    prompt += `### НОВЫЕ ЗАГРУЖЕННЫЕ ФАЙЛЫ ###\n`;
     
     attachments.forEach(file => {
       const fileName = file.name || 'Unnamed file';
@@ -201,63 +228,36 @@ const formatPrompt = (messages, attachments = []) => {
       
       prompt += `Файл: ${fileName} (${fileType}, ${fileSize})\n`;
       
-      // Обработка CSV файлов
+      // Check for duplicate content
+      const contentHash = documentProcessor.calculateContentHash(file.content);
+      
+      // Add note if duplicate file
+      if (contentHash) {
+        fileManager.findFileByHash(contentHash)
+          .then(existingFile => {
+            if (existingFile && existingFile.fileName !== file.name) {
+              prompt += `Примечание: Этот файл имеет идентичное содержимое с ранее загруженным файлом "${existingFile.fileName}"\n`;
+            }
+          })
+          .catch(err => console.error('Error checking for duplicate file:', err));
+      }
+      
+      // Обработка CSV файлов (для прямых вопросов о файлах)
       if (isCSVFile(file) && file.content) {
-        const csvInfo = analyzeCSV(file.content);
-        const rowCount = csvInfo.rowCount;
-        const columnCount = csvInfo.columnCount;
+        const linesCount = file.content.split('\n').length;
+        const firstLine = file.content.split('\n')[0] || '';
+        const columnsCount = firstLine.split(',').length;
         
-        // Добавляем структурированную информацию для специальных запросов
-        if (askingAboutBoth) {
-          prompt += `В файле ${rowCount} строк и ${columnCount} столбцов.\n`;
-        } else if (askingAboutRows) {
-          prompt += `Количество строк в файле: ${rowCount}\n`;
-        } else if (askingAboutColumns) {
-          prompt += `Количество столбцов в файле: ${columnCount}\n`;
-        } else {
-          // Общая информация о CSV
-          prompt += processCSVForModel(file.content);
-        }
-      }
-      // Обработка JSON файлов
-      else if (isJSONFile(file) && file.content) {
-        if (file.content.length <= 5000) {
-          prompt += `Содержимое JSON файла:\n${file.content}\n\n`;
-        } else {
-          prompt += `JSON файл слишком большой для полного включения (${file.content.length} символов).\n`;
-          prompt += `Начало файла:\n${file.content.substring(0, 1000)}...\n\n`;
-        }
-      }
-      // Обработка остальных текстовых файлов
-      else if (file.content) {
-        if (file.content.length <= 5000) {
-          prompt += `Содержимое файла:\n${file.content}\n\n`;
-        } else {
-          prompt += `Файл слишком большой для полного включения (${file.content.length} символов).\n`;
-          prompt += `Начало файла:\n${file.content.substring(0, 1000)}...\n\n`;
-        }
-      }
-      // Для бинарных файлов
-      else {
-        prompt += `[Бинарный файл, содержимое недоступно для анализа]\n\n`;
+        // Добавляем базовую информацию о CSV
+        prompt += `CSV файл: ${linesCount} строк, ${columnsCount} столбцов\n`;
       }
     });
     
-    prompt += `### КОНЕЦ ДАННЫХ ###\n\n`;
+    prompt += `### КОНЕЦ СПИСКА ФАЙЛОВ ###\n\n`;
   }
   
-  // Финальные инструкции перед ответом
-  if (askingAboutBoth) {
-    prompt += `НАПОМИНАНИЕ: Ответь только в формате "В файле X строк и Y столбцов."\n\n`;
-  } else if (askingAboutRows) {
-    prompt += `НАПОМИНАНИЕ: Ответь только числом строк.\n\n`;
-  } else if (askingAboutColumns) {
-    prompt += `НАПОМИНАНИЕ: Ответь только числом столбцов.\n\n`;
-  } else if (isMathQuestion) {
-    prompt += `НАПОМИНАНИЕ: Ответь только результатом математического вычисления.\n\n`;
-  } else {
-    prompt += `НАПОМИНАНИЕ: Отвечай кратко и точно на вопрос пользователя.\n\n`;
-  }
+  // Общие напоминания без жестких инструкций
+  prompt += `НАПОМИНАНИЕ: Дай информативный и точный ответ на вопрос пользователя, опираясь на содержимое загруженных файлов.\n\n`;
   
   // Повторяем актуальный вопрос пользователя
   if (lastUserMessage) {
@@ -267,8 +267,14 @@ const formatPrompt = (messages, attachments = []) => {
   // Добавляем префикс для ответа модели
   prompt += 'Ассистент: ';
   
+  // Ensure we don't exceed token limit
+  if (countTokens(prompt) > MAX_CONTEXT_LENGTH) {
+    console.log(`Warning: Prompt exceeds max token length (${countTokens(prompt)} tokens). Truncating...`);
+    prompt = truncateToTokenCount(prompt, MAX_CONTEXT_LENGTH);
+  }
+  
   // Логирование итогового запроса
-  console.log(`Итоговый запрос сформирован, длина: ${prompt.length} символов`);
+  console.log(`Итоговый запрос сформирован, длина: ${prompt.length} символов, примерно ${countTokens(prompt)} токенов`);
   console.log(`Первые 200 символов запроса: ${prompt.substring(0, 200)}...`);
   
   return prompt;
@@ -286,7 +292,7 @@ const formatPrompt = (messages, attachments = []) => {
  */
 const streamResponse = async ({ messages, attachments = [], model = 'gemma3:4b', onChunk, onComplete, onError }) => {
   try {
-    const prompt = formatPrompt(messages, attachments);
+    const prompt = await formatPrompt(messages, attachments);
     
     // Проверяем, существует ли выбранная модель
     const selectedModel = AVAILABLE_MODELS.find(m => m.id === model) || AVAILABLE_MODELS[0];
@@ -363,7 +369,29 @@ const streamResponse = async ({ messages, attachments = [], model = 'gemma3:4b',
   }
 };
 
+/**
+ * Get all knowledge base documents
+ * @returns {Promise<Array>} - Array of document metadata
+ */
+async function getKnowledgeBase() {
+  return await fileManager.getAllFileMeta();
+}
+
+/**
+ * Delete a document from the knowledge base
+ * @param {string} documentId - Document ID
+ * @returns {Promise<boolean>} - Success status
+ */
+async function deleteDocument(documentId) {
+  const vectorRemoved = await require('./vectorStore').removeDocument(documentId);
+  const fileRemoved = await fileManager.deleteFile(documentId);
+  
+  return vectorRemoved && fileRemoved;
+}
+
 module.exports = {
   streamResponse,
-  getAvailableModels
+  getAvailableModels,
+  getKnowledgeBase,
+  deleteDocument
 };

@@ -11,6 +11,9 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
 const llmService = require('./services/llm');
+const fileManager = require('./services/fileManager');
+const documentProcessor = require('./services/documentProcessor');
+const vectorStore = require('./services/vectorStore');
 
 // Хранилище данных файлов по сессиям
 const sessionAttachments = new Map();
@@ -61,6 +64,56 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
+// Get RAG knowledge base statistics
+app.get('/api/kb/stats', async (req, res) => {
+  try {
+    // Get vector store stats
+    const vectorStats = vectorStore.getStats();
+    
+    // Get all document metadata
+    const documents = await fileManager.getAllFileMeta();
+    
+    res.status(200).json({
+      status: 'ok',
+      knowledgeBase: {
+        documentCount: documents.length,
+        vectorStats
+      }
+    });
+  } catch (error) {
+    console.error('Error getting knowledge base stats:', error);
+    res.status(500).json({ error: 'Failed to get knowledge base statistics' });
+  }
+});
+
+// Get all documents in knowledge base
+app.get('/api/kb/documents', async (req, res) => {
+  try {
+    const documents = await fileManager.getAllFileMeta();
+    res.status(200).json({ documents });
+  } catch (error) {
+    console.error('Error getting knowledge base documents:', error);
+    res.status(500).json({ error: 'Failed to get knowledge base documents' });
+  }
+});
+
+// Delete document from knowledge base
+app.delete('/api/kb/documents/:documentId', async (req, res) => {
+  try {
+    const { documentId } = req.params;
+    const success = await llmService.deleteDocument(documentId);
+    
+    if (success) {
+      res.status(200).json({ status: 'ok', message: 'Document deleted successfully' });
+    } else {
+      res.status(404).json({ status: 'error', message: 'Document not found or could not be deleted' });
+    }
+  } catch (error) {
+    console.error('Error deleting document:', error);
+    res.status(500).json({ error: 'Failed to delete document' });
+  }
+});
+
 // Маршрут для загрузки файлов
 app.post('/api/upload', upload.array('files'), (req, res) => {
   const files = req.files.map(file => ({
@@ -89,6 +142,52 @@ app.post('/api/tags', async (req, res) => {
   } catch (error) {
     console.error('Error proxying /api/tags:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Маршрут для тестирования поиска похожих документов
+app.post('/api/search', async (req, res) => {
+  try {
+    const { query, limit = 5 } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({ error: 'Query is required' });
+    }
+    
+    const results = await documentProcessor.searchRelevantChunks(query, limit);
+    res.json(results);
+  } catch (error) {
+    console.error('Error during search:', error);
+    res.status(500).json({ error: 'Failed to search documents' });
+  }
+});
+
+// Обработка прямого запроса к API для тестирования
+app.post('/api/query', async (req, res) => {
+  try {
+    const { messages, attachments, model = 'gemma3:4b' } = req.body;
+    
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'Valid messages array is required' });
+    }
+    
+    // Форматируем запрос
+    const prompt = await llmService.formatPrompt(messages, attachments);
+    
+    // Отправляем запрос к модели напрямую
+    const llmResponse = await axios.post(process.env.LLM_API_URL, {
+      model,
+      prompt,
+      stream: false
+    });
+    
+    res.json({
+      response: llmResponse.data.response,
+      prompt: prompt // include prompt for debugging
+    });
+  } catch (error) {
+    console.error('Error querying LLM:', error);
+    res.status(500).json({ error: 'Failed to query LLM' });
   }
 });
 
@@ -131,36 +230,23 @@ io.on('connection', (socket) => {
       sessionAttachments.set(sessionId, [...attachments]);
       console.log(`Сохранены вложения для сессии ${sessionId}: ${attachments.length} файлов`);
       
+      // Log attachments details
       attachments.forEach((attachment, index) => {
         console.log(`Вложение ${index + 1}:`);
         console.log(`  Имя: ${attachment.name}`);
         console.log(`  Тип: ${attachment.type}`);
         console.log(`  Размер: ${attachment.size} байт`);
         console.log(`  Наличие контента: ${attachment.content ? 'Да' : 'Нет'}`);
-        if (attachment.content) {
-          console.log(`  Длина контента: ${attachment.content.length} символов`);
-          console.log(`  Фрагмент контента: ${attachment.content.substring(0, 50)}...`);
-        }
-        
-        // Проверка на CSV файл
-        const isCSV = attachment.type === 'text/csv' || 
-                     (attachment.name && attachment.name.toLowerCase().endsWith('.csv'));
-        console.log(`  Это CSV файл: ${isCSV}`);
       });
     } else if (sessionAttachments.has(sessionId)) {
-      // Если в текущем сообщении нет вложений, но в сессии они были ранее, добавляем их к запросу
-      const savedAttachments = sessionAttachments.get(sessionId);
-      console.log(`Повторно используем вложения из сессии ${sessionId}: ${savedAttachments.length} файлов`);
-      
-      // Используем сохраненные вложения вместо пустого массива
-      processedAttachments = savedAttachments;
+      // Если в текущем сообщении нет вложений, но в сессии они были ранее
+      console.log(`Повторно используем вложения из сессии ${sessionId}`);
     } else {
       console.log(`No attachments received`);
-      processedAttachments = [];
     }
     
     try {
-      // Проверяем, есть ли вложения для обработки
+      // Подготавливаем вложения для обработки
       let processedAttachments = attachments;
       
       // Если нет текущих вложений, но есть сохраненные, используем их
@@ -168,39 +254,39 @@ io.on('connection', (socket) => {
         processedAttachments = sessionAttachments.get(sessionId);
       }
       
-      // Обработка загруженных файлов (если есть)
-      processedAttachments = processedAttachments.map(attachment => {
-        // Make sure content is preserved for text files
-        if (attachment.content) {
-          console.log(`Processing file: ${attachment.name} (${attachment.type}) - Content length: ${attachment.content.length}`);
-          
-          // Special handling for CSV files to ensure they're properly processed
-          if (attachment.type === 'text/csv' || 
-              (attachment.name && attachment.name.toLowerCase().endsWith('.csv'))) {
-            console.log(`Special processing for CSV file: ${attachment.name}`);
-            
-            // Make sure content is properly formatted if needed
-            // This is just a simple check - you can enhance this based on your needs
-            const content = attachment.content.trim();
-            
-            return {
-              ...attachment,
-              content,
-              type: 'text/csv'  // Ensure type is set correctly
-            };
-          }
-          
-          return {
-            ...attachment,
-            content: attachment.content
-          };
-        }
-        console.log(`Processing file: ${attachment.name} (${attachment.type}) - No content`);
-        return attachment;
-      });
+      // Check for duplicate files before processing
+      const duplicateChecks = [];
       
-      // Перед вызовом llmService.streamResponse
-      console.log(`Отправка запроса к ИИ модели с ${processedAttachments.length} вложениями`);
+      for (const attachment of processedAttachments) {
+        if (attachment.content) {
+          const contentHash = documentProcessor.calculateContentHash(attachment.content);
+          const existingFile = await fileManager.findFileByHash(contentHash);
+          
+          if (existingFile) {
+            duplicateChecks.push({
+              fileName: attachment.name,
+              isDuplicate: true,
+              existingFileName: existingFile.fileName
+            });
+            
+            // Notify client that file is duplicate
+            socket.emit('file-status', {
+              fileName: attachment.name,
+              status: 'duplicate',
+              existingFileName: existingFile.fileName
+            });
+          } else {
+            duplicateChecks.push({
+              fileName: attachment.name,
+              isDuplicate: false
+            });
+          }
+        }
+      }
+      
+      if (duplicateChecks.some(check => check.isDuplicate)) {
+        console.log('Duplicate files detected:', duplicateChecks.filter(c => c.isDuplicate));
+      }
       
       // Stream response from model
       await llmService.streamResponse({
@@ -236,6 +322,33 @@ io.on('connection', (socket) => {
         socket.emit('error', 'An error occurred while processing the message');
         isGenerating = false;
       }
+    }
+  });
+  
+  // Knowledge base operations
+  socket.on('kb-get-documents', async () => {
+    try {
+      const documents = await fileManager.getAllFileMeta();
+      socket.emit('kb-documents', { documents });
+    } catch (error) {
+      console.error('Error getting knowledge base documents:', error);
+      socket.emit('kb-error', { message: 'Failed to get knowledge base documents' });
+    }
+  });
+  
+  socket.on('kb-delete-document', async (data) => {
+    try {
+      const { documentId } = data;
+      const success = await llmService.deleteDocument(documentId);
+      
+      if (success) {
+        socket.emit('kb-document-deleted', { documentId });
+      } else {
+        socket.emit('kb-error', { message: 'Document not found or could not be deleted' });
+      }
+    } catch (error) {
+      console.error('Error deleting document:', error);
+      socket.emit('kb-error', { message: 'Failed to delete document' });
     }
   });
   
@@ -278,4 +391,10 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
+  console.log(`Интерфейс API доступен по адресу http://localhost:${PORT}/api`);
+  console.log(`Интерфейс socket.io доступен по адресу http://localhost:${PORT}`);
+  
+  // Print vector store stats on startup
+  const vectorStats = vectorStore.getStats();
+  console.log('Vector store stats:', vectorStats);
 });

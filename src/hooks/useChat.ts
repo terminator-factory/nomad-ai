@@ -1,4 +1,4 @@
-// src/hooks/useChat.ts
+// src/hooks/useChat.ts - Updated with RAG support and fixed TypeScript errors
 import { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import io, { Socket } from 'socket.io-client';
@@ -17,6 +17,17 @@ interface ModelOption {
   description?: string;
 }
 
+// Interface for knowledge base document
+interface KnowledgeBaseDocument {
+  id: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  contentHash: string;
+  createdAt: string;
+  chunkCount: number;
+}
+
 const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = {}) => {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -25,9 +36,17 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   
-  // Состояние для моделей
+  // State for models
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('gemma3:4b');
+  
+  // Knowledge base state
+  const [knowledgeBaseDocuments, setKnowledgeBaseDocuments] = useState<KnowledgeBaseDocument[]>([]);
+  const [knowledgeBaseStats, setKnowledgeBaseStats] = useState<any>(null);
+  const [isKnowledgeBaseLoading, setIsKnowledgeBaseLoading] = useState<boolean>(false);
+  
+  // Duplicate file tracking
+  const [duplicateFiles, setDuplicateFiles] = useState<{[fileName: string]: string}>({});
 
   const socketRef = useRef<Socket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -81,6 +100,39 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       setError(errorMsg);
       setIsLoading(false);
     });
+    
+    // Listen for file status updates (e.g., duplicate files)
+    socketRef.current.on('file-status', (data: { fileName: string; status: string; existingFileName?: string }) => {
+      if (data.status === 'duplicate' && data.existingFileName) {
+        // Ensure existingFileName is treated as a non-optional string
+        const fileName = data.fileName;
+        const existingName = data.existingFileName as string; // Type assertion
+        
+        setDuplicateFiles(prev => {
+          // Create a new object with the explicit string type
+          const newState: {[fileName: string]: string} = {...prev};
+          newState[fileName] = existingName;
+          return newState;
+        });
+      }
+    });
+    
+    // Listen for knowledge base updates
+    socketRef.current.on('kb-documents', (data: { documents: KnowledgeBaseDocument[] }) => {
+      setKnowledgeBaseDocuments(data.documents || []);
+      setIsKnowledgeBaseLoading(false);
+    });
+    
+    socketRef.current.on('kb-document-deleted', (data: { documentId: string }) => {
+      setKnowledgeBaseDocuments(prev => 
+        prev.filter(doc => doc.id !== data.documentId)
+      );
+    });
+    
+    socketRef.current.on('kb-error', (data: { message: string }) => {
+      setError(data.message);
+      setIsKnowledgeBaseLoading(false);
+    });
 
     // Load sessions from local storage
     const savedSessions = localStorage.getItem('chatSessions');
@@ -88,23 +140,26 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       setSessions(JSON.parse(savedSessions));
     }
     
-    // Загрузка списка доступных моделей
+    // Load available models
     const fetchModels = async () => {
       try {
         const response = await axios.get(`${SOCKET_URL}/api/models`);
         if (response.data && response.data.models) {
           setModels(response.data.models);
-          // Устанавливаем первую модель по умолчанию, если она есть
+          // Set default model if available
           if (response.data.models.length > 0) {
             setSelectedModel(response.data.models[0].id);
           }
         }
       } catch (error) {
-        console.error('Ошибка при загрузке списка моделей:', error);
+        console.error('Error loading models:', error);
       }
     };
 
     fetchModels();
+    
+    // Initial load of knowledge base documents
+    loadKnowledgeBaseDocuments();
 
     return () => {
       socketRef.current?.disconnect();
@@ -116,11 +171,11 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     setSessions(prevSessions => {
       const updatedSessions = prevSessions.map(session => {
         if (session.id === currentSessionId) {
-          // Найдем сообщение в сессии по его id
+          // Find message in session by ID
           const messageIndex = session.messages.findIndex(msg => msg.id === message.id);
 
           if (messageIndex !== -1) {
-            // Если сообщение существует, обновим его
+            // If message exists, update it
             const updatedMessages = [...session.messages];
             updatedMessages[messageIndex] = message;
 
@@ -130,7 +185,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
               updatedAt: new Date()
             };
           } else {
-            // Если сообщения нет, добавим его
+            // If message doesn't exist, add it
             return {
               ...session,
               messages: [...session.messages, message],
@@ -141,7 +196,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         return session;
       });
 
-      // Сохраняем обновленные сессии в localStorage
+      // Save updated sessions to localStorage
       localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
 
       return updatedSessions;
@@ -160,19 +215,62 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     }
   }, [sessions]);
 
-  // В функции sendMessage добавим проверку на isLoading
+  // Load knowledge base documents
+  const loadKnowledgeBaseDocuments = async () => {
+    setIsKnowledgeBaseLoading(true);
+    
+    if (socketRef.current) {
+      socketRef.current.emit('kb-get-documents');
+    } else {
+      try {
+        const response = await axios.get(`${SOCKET_URL}/api/kb/documents`);
+        setKnowledgeBaseDocuments(response.data.documents || []);
+      } catch (error) {
+        console.error('Error loading knowledge base documents:', error);
+        setError('Failed to load knowledge base documents');
+      } finally {
+        setIsKnowledgeBaseLoading(false);
+      }
+    }
+    
+    // Also load stats
+    try {
+      const response = await axios.get(`${SOCKET_URL}/api/kb/stats`);
+      setKnowledgeBaseStats(response.data.knowledgeBase.vectorStats);
+    } catch (error) {
+      console.error('Error loading knowledge base stats:', error);
+    }
+  };
+  
+  // Delete document from knowledge base
+  const deleteKnowledgeBaseDocument = async (documentId: string) => {
+    if (socketRef.current) {
+      socketRef.current.emit('kb-delete-document', { documentId });
+    } else {
+      try {
+        await axios.delete(`${SOCKET_URL}/api/kb/documents/${documentId}`);
+        setKnowledgeBaseDocuments(prev => 
+          prev.filter(doc => doc.id !== documentId)
+        );
+      } catch (error) {
+        console.error('Error deleting document:', error);
+        setError('Failed to delete document');
+      }
+    }
+  };
+
   const sendMessage = async (content: string) => {
     if (!content.trim() && attachments.length === 0) return;
     
-    // Если уже идет генерация, сначала останавливаем ее
+    // If already generating, stop first
     if (isLoading) {
       stopGeneration();
       
-      // Небольшая задержка, чтобы сервер успел обработать остановку
+      // Short delay to let server process the stop request
       await new Promise(resolve => setTimeout(resolve, 200));
     }
     
-    // Создаем сообщение пользователя
+    // Create user message
     const userMessage: Message = {
       id: uuidv4(),
       role: 'user',
@@ -180,7 +278,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       timestamp: new Date()
     };
     
-    // Создаем пустое сообщение ассистента
+    // Create empty assistant message
     const emptyAssistantMessage: Message = {
       id: uuidv4(),
       role: 'assistant',
@@ -188,15 +286,15 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       timestamp: new Date()
     };
     
-    // Обновляем локальный массив сообщений
+    // Update local message array
     setMessages(prev => {
-      // Проверяем, есть ли в конце пустое сообщение ассистента
+      // Check if there's already an empty assistant message at the end
       const lastMessage = prev[prev.length - 1];
       if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content === '') {
-        // Если есть, заменяем его на новую пару сообщений
+        // Replace it with new message pair
         return [...prev.slice(0, -1), userMessage, emptyAssistantMessage];
       }
-      // Иначе просто добавляем новые сообщения
+      // Otherwise just add new messages
       return [...prev, userMessage, emptyAssistantMessage];
     });
     
@@ -204,30 +302,33 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     setError(null);
     
     try {
-      // Подготавливаем историю сообщений для API
+      // Prepare message history for API
       const messageHistory = messages.map(msg => ({
         role: msg.role,
         content: msg.content
       }));
       
-      // Добавляем новое сообщение пользователя
+      // Add new user message
       messageHistory.push({
         role: 'user',
         content
       });
       
-      // Отправляем сообщение через Socket.IO с выбранной моделью
+      // Clear duplicate files state when sending a message
+      setDuplicateFiles({});
+      
+      // Send message via Socket.IO with selected model
       socketRef.current?.emit('chat-message', {
         sessionId: currentSessionId,
         messages: messageHistory,
         attachments,
-        model: selectedModel // Добавляем выбранную модель
+        model: selectedModel
       });
       
-      // Очищаем вложения после отправки
+      // Clear attachments after sending
       setAttachments([]);
       
-      // Обновляем или создаем сессию
+      // Update or create session
       const sessionExists = sessions.some(session => session.id === currentSessionId);
       if (sessionExists) {
         setSessions(prevSessions => 
@@ -236,7 +337,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
               ? { 
                   ...session, 
                   messages: [...session.messages.filter(msg => 
-                    // Удаляем все пустые сообщения ассистента перед добавлением новых
+                    // Remove any empty assistant messages before adding new ones
                     !(msg.role === 'assistant' && msg.content === '')
                   ), userMessage, emptyAssistantMessage], 
                   updatedAt: new Date(),
@@ -256,7 +357,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         setSessions(prev => [...prev, newSession]);
       }
       
-      // Сохраняем сессии в localStorage после обновления
+      // Save sessions to localStorage after update
       setTimeout(() => {
         localStorage.setItem('chatSessions', JSON.stringify(sessions));
       }, 100);
@@ -265,20 +366,20 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       setError('Failed to send message. Please try again.');
       setIsLoading(false);
       
-      // Удаляем пустое сообщение ассистента при ошибке
+      // Remove empty assistant message on error
       setMessages(prev => prev.filter(msg => 
         !(msg.id === emptyAssistantMessage.id && msg.content === '')
       ));
     }
   };
 
-  // Остановка генерации ответа
+  // Stop generation
   const stopGeneration = () => {
     if (socketRef.current && isLoading) {
-      // Отправляем событие остановки генерации на сервер
+      // Send stop event to server
       socketRef.current.emit('stop-generation', { sessionId: currentSessionId });
 
-      // Добавляем примечание к последнему сообщению
+      // Add note to last message
       setMessages(prev => {
         const lastMessage = prev[prev.length - 1];
         if (lastMessage && lastMessage.role === 'assistant') {
@@ -287,7 +388,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
             content: lastMessage.content + "\n\n*Генерация была остановлена*"
           };
 
-          // Обновляем сессию с этим сообщением
+          // Update session with this message
           updateSessionWithMessage(updatedMessage);
 
           return [...prev.slice(0, -1), updatedMessage];
@@ -298,14 +399,14 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   };
 
   const startNewChat = () => {
-    // Если идет генерация, остановим ее
+    // If generating, stop first
     if (isLoading) {
       stopGeneration();
     }
 
     const newSessionId = uuidv4();
 
-    // Сохраняем текущую сессию перед созданием новой
+    // Save current session before creating new one
     if (currentSessionId && messages.length > 0) {
       setSessions(prevSessions => {
         const updatedSessions = prevSessions.map(session =>
@@ -319,12 +420,13 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       });
     }
 
-    // Устанавливаем новую сессию
+    // Set new session
     setCurrentSessionId(newSessionId);
     setMessages([]);
     setAttachments([]);
+    setDuplicateFiles({});
 
-    // Создаем новую сессию
+    // Create new session
     const newSession: ChatSession = {
       id: newSessionId,
       title: 'New chat',
@@ -335,19 +437,19 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
     setSessions(prev => [...prev, newSession]);
 
-    // Уведомляем сервер о смене сессии
+    // Notify server of session change
     if (socketRef.current) {
       socketRef.current.emit('change-session', { sessionId: newSessionId });
     }
   };
 
   const loadSession = (sessionId: string) => {
-    // Если идет генерация, остановим ее
+    // If generating, stop first
     if (isLoading) {
       stopGeneration();
     }
 
-    // Сохраняем текущую сессию перед переключением
+    // Save current session before switching
     if (currentSessionId && messages.length > 0) {
       setSessions(prevSessions => {
         const updatedSessions = prevSessions.map(session =>
@@ -361,13 +463,15 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       });
     }
 
-    // Загружаем выбранную сессию
+    // Load selected session
     const session = sessions.find(s => s.id === sessionId);
     if (session) {
       setCurrentSessionId(sessionId);
       setMessages([...session.messages]);
+      setAttachments([]);
+      setDuplicateFiles({});
 
-      // Уведомляем сервер о смене сессии
+      // Notify server of session change
       if (socketRef.current) {
         socketRef.current.emit('change-session', { sessionId });
       }
@@ -383,17 +487,38 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         file.type === 'application/xml' ||
         file.name.toLowerCase().endsWith('.csv') ||
         file.name.toLowerCase().endsWith('.html') ||
-        file.name.toLowerCase().endsWith('.htm')) {
+        file.name.toLowerCase().endsWith('.htm') ||
+        file.name.toLowerCase().endsWith('.md') ||
+        file.name.toLowerCase().endsWith('.txt') ||
+        file.name.toLowerCase().endsWith('.js') ||
+        file.name.toLowerCase().endsWith('.jsx') ||
+        file.name.toLowerCase().endsWith('.ts') ||
+        file.name.toLowerCase().endsWith('.tsx') ||
+        file.name.toLowerCase().endsWith('.json')) {
+        
         const reader = new FileReader();
         reader.onload = (e) => {
           const content = e.target?.result as string;
+          
+          // Determine file type based on extension if not provided
+          let fileType = file.type;
+          if (!fileType || fileType === 'application/octet-stream') {
+            const ext = file.name.split('.').pop()?.toLowerCase();
+            if (ext === 'csv') fileType = 'text/csv';
+            else if (ext === 'html' || ext === 'htm') fileType = 'text/html';
+            else if (ext === 'json') fileType = 'application/json';
+            else if (ext === 'md') fileType = 'text/markdown';
+            else if (ext === 'js' || ext === 'jsx') fileType = 'application/javascript';
+            else if (ext === 'ts' || ext === 'tsx') fileType = 'application/typescript';
+            else fileType = 'text/plain';
+          }
+          
           setAttachments(prev => [
             ...prev,
             {
               id: uuidv4(),
               name: file.name,
-              type: file.type || (file.name.toLowerCase().endsWith('.csv') ? 'text/csv' : 
-                     (file.name.toLowerCase().endsWith('.html') || file.name.toLowerCase().endsWith('.htm')) ? 'text/html' : 'text/plain'),
+              type: fileType,
               size: file.size,
               content
             }
@@ -401,7 +526,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         };
         reader.readAsText(file);
       } else {
-        // For other files, just store metadata
+        // For binary files, just store metadata
         setAttachments(prev => [
           ...prev,
           {
@@ -416,15 +541,35 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   };
 
   const removeAttachment = (id: string) => {
+    const fileToRemove = attachments.find(att => att.id === id);
+    
+    // Remove the attachment
     setAttachments(prevAttachments => prevAttachments.filter(file => file.id !== id));
+    
+    // Also remove any duplicate file notifications for this attachment
+    if (fileToRemove) {
+      setDuplicateFiles(prev => {
+        // Create a new object with explicit typing
+        const newState: {[fileName: string]: string} = {};
+        
+        // Copy all entries except the one to remove
+        Object.keys(prev).forEach(key => {
+          if (key !== fileToRemove.name) {
+            newState[key] = prev[key];
+          }
+        });
+        
+        return newState;
+      });
+    }
   };
 
   const deleteChat = (sessionId: string) => {
-    // Удаляем сессию из списка сессий
+    // Delete session from list
     setSessions(prevSessions => {
-      // Проверяем, не пытаемся ли удалить последний чат
+      // Check if we're trying to delete the last chat
       if (prevSessions.length <= 1) {
-        // Если это последний чат, создаем новый перед удалением
+        // Create a new one before deleting
         const newSessionId = uuidv4();
         const newSession: ChatSession = {
           id: newSessionId,
@@ -434,31 +579,35 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
           updatedAt: new Date()
         };
 
-        // Если удаляем текущую сессию, переключаемся на новую
+        // If deleting current session, switch to new one
         if (sessionId === currentSessionId) {
           setCurrentSessionId(newSessionId);
           setMessages([]);
+          setAttachments([]);
+          setDuplicateFiles({});
 
-          // Уведомляем сервер о смене сессии
+          // Notify server of session change
           if (socketRef.current) {
             socketRef.current.emit('change-session', { sessionId: newSessionId });
           }
         }
 
-        // Возвращаем новый массив с новой сессией, без удаляемой
+        // Return new array with new session, without deleted one
         return [newSession, ...prevSessions.filter(session => session.id !== sessionId)];
       }
 
-      // Если не последний чат, просто удаляем
+      // If not the last chat, just delete
       const filteredSessions = prevSessions.filter(session => session.id !== sessionId);
 
-      // Если удаляем текущую сессию, переключаемся на первую доступную
+      // If deleting current session, switch to first available
       if (sessionId === currentSessionId && filteredSessions.length > 0) {
         const newCurrentSession = filteredSessions[0];
         setCurrentSessionId(newCurrentSession.id);
         setMessages([...newCurrentSession.messages]);
+        setAttachments([]);
+        setDuplicateFiles({});
 
-        // Уведомляем сервер о смене сессии
+        // Notify server of session change
         if (socketRef.current) {
           socketRef.current.emit('change-session', { sessionId: newCurrentSession.id });
         }
@@ -468,10 +617,15 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     });
   };
   
-  // Функция для изменения выбранной модели
+  // Change selected model
   const changeModel = (modelId: string) => {
     setSelectedModel(modelId);
-    console.log(`Модель изменена на ${modelId}`);
+    console.log(`Model changed to ${modelId}`);
+  };
+  
+  // Refresh knowledge base
+  const refreshKnowledgeBase = () => {
+    loadKnowledgeBaseDocuments();
   };
 
   return {
@@ -483,6 +637,10 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     attachments,
     models,
     selectedModel,
+    duplicateFiles,
+    knowledgeBaseDocuments,
+    knowledgeBaseStats,
+    isKnowledgeBaseLoading,
     sendMessage,
     startNewChat,
     loadSession,
@@ -491,6 +649,8 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     deleteChat,
     stopGeneration,
     changeModel,
+    loadKnowledgeBaseDocuments: refreshKnowledgeBase,
+    deleteKnowledgeBaseDocument,
     messagesEndRef
   };
 };
