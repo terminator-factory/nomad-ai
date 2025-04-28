@@ -1,10 +1,10 @@
 // src/components/Chat.tsx - Updated with Knowledge Base integration
 import React, { useState, useEffect } from 'react';
 import TextareaAutosize from 'react-textarea-autosize';
-import { 
-  PaperAirplaneIcon, 
-  PlusIcon, 
-  TrashIcon, 
+import {
+  PaperAirplaneIcon,
+  PlusIcon,
+  TrashIcon,
   StopIcon,
   BookOpenIcon
 } from '@heroicons/react/24/solid';
@@ -58,6 +58,7 @@ const Chat: React.FC = () => {
 
     // If loading, stop generation instead
     if (isLoading) {
+      console.log("Stopping generation via button click");
       stopGeneration();
       return;
     }
@@ -116,9 +117,8 @@ const Chat: React.FC = () => {
               {sessions.slice().reverse().map((session) => (
                 <div
                   key={session.id}
-                  className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-green-700 ${
-                    session.id === currentSessionId ? 'bg-green-700' : ''
-                  }`}
+                  className={`w-full flex items-center justify-between p-2 rounded-md hover:bg-green-700 ${session.id === currentSessionId ? 'bg-green-700' : ''
+                    }`}
                 >
                   <button
                     onClick={() => loadSession(session.id)}
@@ -186,7 +186,7 @@ const Chat: React.FC = () => {
           <div className="font-medium">
             {currentSessionId ? getChatTitle(currentSessionId) : 'New chat'}
           </div>
-          
+
           {/* Knowledge base button in header (small screens) */}
           {!showSidebar && (
             <button
@@ -271,12 +271,17 @@ const Chat: React.FC = () => {
             />
             <button
               type="submit"
-              className={`absolute right-2 bottom-2.5 rounded-md p-1.5 transition-colors ${
-                isLoading
+              className={`absolute right-2 bottom-2.5 rounded-md p-1.5 transition-colors ${isLoading
                   ? 'bg-red-600 hover:bg-red-700 text-white'
                   : 'text-gray-400 hover:bg-gray-700 hover:text-white'
-              }`}
+                }`}
               title={isLoading ? "Stop generation" : "Send message"}
+              onClick={() => {
+                if (isLoading) {
+                  console.log("Explicitly stopping via button");
+                  stopGeneration();
+                }
+              }}
             >
               {isLoading ? (
                 <StopIcon className="h-5 w-5" />
@@ -287,11 +292,11 @@ const Chat: React.FC = () => {
           </form>
         </div>
       </div>
-      
+
       {/* Knowledge Base modal */}
       {showKnowledgeBase && (
-        <KnowledgeBase 
-          onClose={() => setShowKnowledgeBase(false)} 
+        <KnowledgeBase
+          onClose={() => setShowKnowledgeBase(false)}
         />
       )}
     </div>

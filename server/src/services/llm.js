@@ -63,6 +63,10 @@ const getAvailableModels = async () => {
     if (response.data && response.data.models && response.data.models.length > 0) {
       console.log(`Found ${response.data.models.length} models in Ollama API: ${response.data.models.map(m => m.name).join(', ')}`);
       
+      // ИСПРАВЛЕНО: Всегда возвращаем все предустановленные модели для отладки
+      return DEFAULT_MODELS;
+      
+      /* ЗАКОММЕНТИРОВАНО ДЛЯ ОТЛАДКИ
       // Создаем результирующий массив моделей
       const resultModels = [];
       
@@ -97,6 +101,7 @@ const getAvailableModels = async () => {
       
       // Возвращаем найденные модели
       return resultModels;
+      */
     }
   } catch (error) {
     console.warn('Could not fetch models from Ollama API:', error.message);

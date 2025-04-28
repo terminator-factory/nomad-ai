@@ -35,18 +35,18 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   const [currentSessionId, setCurrentSessionId] = useState<string>(sessionId);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
-  
+
   // State for models
   const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('gemma3:4b');
-  
+
   // Knowledge base state
   const [knowledgeBaseDocuments, setKnowledgeBaseDocuments] = useState<KnowledgeBaseDocument[]>([]);
   const [knowledgeBaseStats, setKnowledgeBaseStats] = useState<any>(null);
   const [isKnowledgeBaseLoading, setIsKnowledgeBaseLoading] = useState<boolean>(false);
-  
+
   // Duplicate file tracking
-  const [duplicateFiles, setDuplicateFiles] = useState<{[fileName: string]: string}>({});
+  const [duplicateFiles, setDuplicateFiles] = useState<{ [fileName: string]: string }>({});
 
   const socketRef = useRef<Socket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -100,35 +100,35 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       setError(errorMsg);
       setIsLoading(false);
     });
-    
+
     // Listen for file status updates (e.g., duplicate files)
     socketRef.current.on('file-status', (data: { fileName: string; status: string; existingFileName?: string }) => {
       if (data.status === 'duplicate' && data.existingFileName) {
         // Ensure existingFileName is treated as a non-optional string
         const fileName = data.fileName;
         const existingName = data.existingFileName as string; // Type assertion
-        
+
         setDuplicateFiles(prev => {
           // Create a new object with the explicit string type
-          const newState: {[fileName: string]: string} = {...prev};
+          const newState: { [fileName: string]: string } = { ...prev };
           newState[fileName] = existingName;
           return newState;
         });
       }
     });
-    
+
     // Listen for knowledge base updates
     socketRef.current.on('kb-documents', (data: { documents: KnowledgeBaseDocument[] }) => {
       setKnowledgeBaseDocuments(data.documents || []);
       setIsKnowledgeBaseLoading(false);
     });
-    
+
     socketRef.current.on('kb-document-deleted', (data: { documentId: string }) => {
-      setKnowledgeBaseDocuments(prev => 
+      setKnowledgeBaseDocuments(prev =>
         prev.filter(doc => doc.id !== data.documentId)
       );
     });
-    
+
     socketRef.current.on('kb-error', (data: { message: string }) => {
       setError(data.message);
       setIsKnowledgeBaseLoading(false);
@@ -139,19 +139,19 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     if (savedSessions) {
       setSessions(JSON.parse(savedSessions));
     }
-    
+
     // Load available models
     const fetchModels = async () => {
       try {
         const response = await axios.get(`${SOCKET_URL}/api/models`);
-        if (response.data && Array.isArray(response.data.models)) {
+        console.log('Models response from server:', response.data);
+
+        if (response.data && Array.isArray(response.data.models) && response.data.models.length > 0) {
           setModels(response.data.models);
           // Установка модели по умолчанию, если доступна
-          if (response.data.models.length > 0) {
-            setSelectedModel(response.data.models[0].id);
-          }
+          setSelectedModel(response.data.models[0].id);
         } else {
-          // Если ответ не массив, устанавливаем модели по умолчанию
+          // Если ответ некорректный, устанавливаем модели по умолчанию
           console.error('Invalid models response:', response.data);
           setModels([
             { id: 'gemma3:4b', name: 'Gemma 3 4B', description: 'Модель по умолчанию' }
@@ -167,7 +167,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     };
 
     fetchModels();
-    
+
     // Initial load of knowledge base documents
     loadKnowledgeBaseDocuments();
 
@@ -228,7 +228,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   // Load knowledge base documents
   const loadKnowledgeBaseDocuments = async () => {
     setIsKnowledgeBaseLoading(true);
-    
+
     if (socketRef.current) {
       socketRef.current.emit('kb-get-documents');
     } else {
@@ -242,7 +242,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         setIsKnowledgeBaseLoading(false);
       }
     }
-    
+
     // Also load stats
     try {
       const response = await axios.get(`${SOCKET_URL}/api/kb/stats`);
@@ -251,7 +251,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       console.error('Error loading knowledge base stats:', error);
     }
   };
-  
+
   // Delete document from knowledge base
   const deleteKnowledgeBaseDocument = async (documentId: string) => {
     if (socketRef.current) {
@@ -259,7 +259,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     } else {
       try {
         await axios.delete(`${SOCKET_URL}/api/kb/documents/${documentId}`);
-        setKnowledgeBaseDocuments(prev => 
+        setKnowledgeBaseDocuments(prev =>
           prev.filter(doc => doc.id !== documentId)
         );
       } catch (error) {
@@ -271,15 +271,15 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
   const sendMessage = async (content: string) => {
     if (!content.trim() && attachments.length === 0) return;
-    
+
     // If already generating, stop first
     if (isLoading) {
       stopGeneration();
-      
+
       // Short delay to let server process the stop request
       await new Promise(resolve => setTimeout(resolve, 200));
     }
-    
+
     // Create user message
     const userMessage: Message = {
       id: uuidv4(),
@@ -287,7 +287,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       content,
       timestamp: new Date()
     };
-    
+
     // Create empty assistant message
     const emptyAssistantMessage: Message = {
       id: uuidv4(),
@@ -295,7 +295,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       content: '',
       timestamp: new Date()
     };
-    
+
     // Update local message array
     setMessages(prev => {
       // Check if there's already an empty assistant message at the end
@@ -307,26 +307,26 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       // Otherwise just add new messages
       return [...prev, userMessage, emptyAssistantMessage];
     });
-    
+
     setIsLoading(true);
     setError(null);
-    
+
     try {
       // Prepare message history for API
       const messageHistory = messages.map(msg => ({
         role: msg.role,
         content: msg.content
       }));
-      
+
       // Add new user message
       messageHistory.push({
         role: 'user',
         content
       });
-      
+
       // Clear duplicate files state when sending a message
       setDuplicateFiles({});
-      
+
       // Send message via Socket.IO with selected model
       socketRef.current?.emit('chat-message', {
         sessionId: currentSessionId,
@@ -334,25 +334,25 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         attachments,
         model: selectedModel
       });
-      
+
       // Clear attachments after sending
       setAttachments([]);
-      
+
       // Update or create session
       const sessionExists = sessions.some(session => session.id === currentSessionId);
       if (sessionExists) {
-        setSessions(prevSessions => 
-          prevSessions.map(session => 
-            session.id === currentSessionId 
-              ? { 
-                  ...session, 
-                  messages: [...session.messages.filter(msg => 
-                    // Remove any empty assistant messages before adding new ones
-                    !(msg.role === 'assistant' && msg.content === '')
-                  ), userMessage, emptyAssistantMessage], 
-                  updatedAt: new Date(),
-                  title: content.slice(0, 30) + (content.length > 30 ? '...' : '')
-                }
+        setSessions(prevSessions =>
+          prevSessions.map(session =>
+            session.id === currentSessionId
+              ? {
+                ...session,
+                messages: [...session.messages.filter(msg =>
+                  // Remove any empty assistant messages before adding new ones
+                  !(msg.role === 'assistant' && msg.content === '')
+                ), userMessage, emptyAssistantMessage],
+                updatedAt: new Date(),
+                title: content.slice(0, 30) + (content.length > 30 ? '...' : '')
+              }
               : session
           )
         );
@@ -366,18 +366,18 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         };
         setSessions(prev => [...prev, newSession]);
       }
-      
+
       // Save sessions to localStorage after update
       setTimeout(() => {
         localStorage.setItem('chatSessions', JSON.stringify(sessions));
       }, 100);
-      
+
     } catch (err) {
       setError('Failed to send message. Please try again.');
       setIsLoading(false);
-      
+
       // Remove empty assistant message on error
-      setMessages(prev => prev.filter(msg => 
+      setMessages(prev => prev.filter(msg =>
         !(msg.id === emptyAssistantMessage.id && msg.content === '')
       ));
     }
@@ -385,26 +385,34 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
   // Stop generation
   const stopGeneration = () => {
-    if (socketRef.current && isLoading) {
-      // Send stop event to server
-      socketRef.current.emit('stop-generation', { sessionId: currentSessionId });
-
-      // Add note to last message
+    if (socketRef.current) {
+      console.log("Sending stop-generation event to server");
+      
+      // Отправляем событие остановки с текущим ID сессии
+      socketRef.current.emit('stop-generation', { 
+        sessionId: currentSessionId,
+        timestamp: new Date().getTime() 
+      });
+  
+      // Добавляем заметку к последнему сообщению (необязательно дожидаться ответа сервера)
       setMessages(prev => {
         const lastMessage = prev[prev.length - 1];
         if (lastMessage && lastMessage.role === 'assistant') {
           const updatedMessage = {
             ...lastMessage,
-            content: lastMessage.content + "\n\n*Генерация была остановлена*"
+            content: lastMessage.content + "\n\n*Генерация была остановлена пользователем*"
           };
-
+  
           // Update session with this message
           updateSessionWithMessage(updatedMessage);
-
+  
           return [...prev.slice(0, -1), updatedMessage];
         }
         return prev;
       });
+      
+      // Локально сбрасываем состояние загрузки даже если сервер не ответил
+      setIsLoading(false);
     }
   };
 
@@ -505,11 +513,11 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         file.name.toLowerCase().endsWith('.ts') ||
         file.name.toLowerCase().endsWith('.tsx') ||
         file.name.toLowerCase().endsWith('.json')) {
-        
+
         const reader = new FileReader();
         reader.onload = (e) => {
           const content = e.target?.result as string;
-          
+
           // Determine file type based on extension if not provided
           let fileType = file.type;
           if (!fileType || fileType === 'application/octet-stream') {
@@ -522,7 +530,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
             else if (ext === 'ts' || ext === 'tsx') fileType = 'application/typescript';
             else fileType = 'text/plain';
           }
-          
+
           setAttachments(prev => [
             ...prev,
             {
@@ -552,23 +560,23 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
   const removeAttachment = (id: string) => {
     const fileToRemove = attachments.find(att => att.id === id);
-    
+
     // Remove the attachment
     setAttachments(prevAttachments => prevAttachments.filter(file => file.id !== id));
-    
+
     // Also remove any duplicate file notifications for this attachment
     if (fileToRemove) {
       setDuplicateFiles(prev => {
         // Create a new object with explicit typing
-        const newState: {[fileName: string]: string} = {};
-        
+        const newState: { [fileName: string]: string } = {};
+
         // Copy all entries except the one to remove
         Object.keys(prev).forEach(key => {
           if (key !== fileToRemove.name) {
             newState[key] = prev[key];
           }
         });
-        
+
         return newState;
       });
     }
@@ -626,13 +634,13 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       return filteredSessions;
     });
   };
-  
+
   // Change selected model
   const changeModel = (modelId: string) => {
     setSelectedModel(modelId);
     console.log(`Model changed to ${modelId}`);
   };
-  
+
   // Refresh knowledge base
   const refreshKnowledgeBase = () => {
     loadKnowledgeBaseDocuments();

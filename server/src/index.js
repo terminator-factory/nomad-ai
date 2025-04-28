@@ -72,22 +72,28 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-// Получить список доступных моделей
-app.get('/api/models', (req, res) => {
-  const models = llmService.getAvailableModels();
-  res.status(200).json({ models });
-});
-
-// API для базы знаний (Knowledge Base)
+// Получить список доступных моделей - ИСПРАВЛЕНО: только один асинхронный маршрут
 app.get('/api/models', async (req, res) => {
   try {
     const models = await llmService.getAvailableModels();
+    console.log('Returning models to client:', models);
     res.status(200).json({ models });
   } catch (error) {
     console.error('Error fetching models:', error);
     res.status(200).json({ models: [
       { id: 'gemma3:4b', name: 'Жека', description: 'Модель по умолчанию' }
     ]});
+  }
+});
+
+// API для базы знаний (Knowledge Base)
+app.get('/api/kb/documents', async (req, res) => {
+  try {
+    const documents = await fileManager.getAllFileMeta();
+    res.status(200).json({ documents });
+  } catch (error) {
+    console.error('Error getting KB documents:', error);
+    res.status(500).json({ error: 'Failed to retrieve knowledge base documents' });
   }
 });
 
@@ -131,35 +137,16 @@ io.on('connection', (socket) => {
   let currentRequestId = null;    // ID текущего запроса
   let isGenerating = false;       // Флаг генерации ответа
   let currentSessionId = null;    // ID текущей активной сессии
+  let currentModel = null;        // Текущая модель
   
   // Запрос на получение документов базы знаний
   socket.on('kb-get-documents', async () => {
-    try {
-      const documents = await fileManager.getAllFileMeta();
-      socket.emit('kb-documents', { documents });
-    } catch (error) {
-      console.error('Error getting KB documents:', error);
-      socket.emit('kb-error', { message: 'Failed to retrieve knowledge base documents' });
-    }
+    // ... существующий код ...
   });
   
   // Запрос на удаление документа из базы знаний
   socket.on('kb-delete-document', async (data) => {
-    try {
-      const { documentId } = data;
-      const success = await llmService.deleteDocument(documentId);
-      
-      if (success) {
-        socket.emit('kb-document-deleted', { documentId });
-        // Также уведомляем всех остальных клиентов
-        socket.broadcast.emit('kb-document-deleted', { documentId });
-      } else {
-        socket.emit('kb-error', { message: 'Document not found or could not be deleted' });
-      }
-    } catch (error) {
-      console.error('Error deleting KB document:', error);
-      socket.emit('kb-error', { message: 'Failed to delete document' });
-    }
+    // ... существующий код ...
   });
   
   socket.on('chat-message', async (data) => {
@@ -177,21 +164,16 @@ io.on('connection', (socket) => {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     
-    // Устанавливаем новый ID запроса и сессии
+    // Устанавливаем состояние текущего запроса
     currentRequestId = requestId;
     currentSessionId = sessionId;
+    currentModel = model;
     isGenerating = true;
     
     console.log(`Starting generation for session ${sessionId}, request ${requestId}, model ${model}`);
     
     try {
-      // Обработка загруженных файлов (если есть)
-      console.log(`Received attachments: ${attachments.length}`);
-      
-      const processedAttachments = attachments.map(attachment => {
-        console.log(`Attachment ${attachment.name}: ${attachment.size} bytes, has content: ${!!attachment.content}`);
-        return attachment;
-      });
+      // ... существующий код для обработки attachments ...
       
       // Стримим ответ от модели
       await llmService.streamResponse({
@@ -213,55 +195,41 @@ io.on('connection', (socket) => {
           }
         },
         onError: (error) => {
-          console.error(`Error during generation for request ${requestId}:`, error);
-          // Сообщаем об ошибке только если это текущий запрос
-          if (currentRequestId === requestId) {
-            socket.emit('error', 'Error getting response from model');
-            isGenerating = false;
-          }
+          // ... существующий код ...
         }
       });
     } catch (error) {
-      console.error(`Error processing request ${requestId}:`, error);
-      if (currentRequestId === requestId) {
-        socket.emit('error', 'Error processing message');
-        isGenerating = false;
-      }
+      // ... существующий код ...
     }
   });
   
+  // ОБНОВЛЕННЫЙ обработчик остановки генерации
   socket.on('stop-generation', (data) => {
     console.log(`Request to stop generation from client ${socket.id} for session ${data?.sessionId || 'not specified'}`);
     
-    if (isGenerating) {
-      console.log('Stopping generation');
+    // ВАЖНО: всегда проверять принадлежность сессии, но не требовать точного совпадения флага isGenerating
+    if (data?.sessionId && data.sessionId === currentSessionId) {
+      console.log(`Stopping generation for session ${currentSessionId}, model ${currentModel}`);
+      
+      // Принудительно остановить и отправить завершение
       isGenerating = false;
       socket.emit('message-complete');
+      
+      // Добавляем запись о прерывании для отладки
+      console.log(`Generation was forcibly stopped by user request for session ${currentSessionId}`);
     } else {
-      console.log('Generation already stopped or not running');
+      // Для отладки сообщаем о несоответствии сессий
+      console.log(`Session mismatch: request session=${data?.sessionId}, current session=${currentSessionId}`);
+      console.log(`Current generation status: isGenerating=${isGenerating}`);
     }
   });
   
   socket.on('change-session', (data) => {
-    console.log(`Client ${socket.id} changed session to ${data.sessionId}`);
-    
-    // Если идет генерация для другой сессии, останавливаем ее
-    if (isGenerating && currentSessionId !== data.sessionId) {
-      console.log(`Stopping generation when changing session from ${currentSessionId} to ${data.sessionId}`);
-      isGenerating = false;
-      socket.emit('message-complete');
-    }
-    
-    // Обновляем текущую сессию
-    currentSessionId = data.sessionId;
+    // ... существующий код ...
   });
   
   socket.on('disconnect', () => {
-    console.log(`Client disconnected: ${socket.id}`);
-    // Очищаем состояние при отключении
-    isGenerating = false;
-    currentRequestId = null;
-    currentSessionId = null;
+    // ... существующий код ...
   });
 });
 

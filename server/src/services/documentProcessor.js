@@ -256,9 +256,12 @@ function splitCSVIntoChunks(csvText, chunkSize, overlap) {
   }
 }
 
-// Update the processDocument function to use the new CSV-aware chunking
-const originalProcessDocument = processDocument;
-
+/**
+ * Process a document file and store in knowledge base
+ * @param {Object} file - File object with content
+ * @param {boolean} forceProcess - Force processing even if duplicate
+ * @returns {Promise<Object>} - Processing result
+ */
 async function processDocument(file, forceProcess = false) {
   try {
     console.log(`Processing document: ${file.name} (${file.size} bytes)`);
@@ -399,24 +402,29 @@ async function processDocument(file, forceProcess = false) {
     let savedChunks = 0;
     for (const chunk of processedChunks) {
       try {
+        // Добавляем чанк в векторное хранилище
         const added = await vectorStore.addChunk(chunk);
         if (added) {
           savedChunks++;
-          // Принудительно сохраняем после каждого 10-го чанка
-          if (savedChunks % 10 === 0) {
-            await vectorStore.saveAll();
-            console.log(`Сохранено ${savedChunks} чанков`);
-          }
+          
+          // ВАЖНО: обязательно сохраняем после каждого чанка в режиме разработки
+          // чтобы предотвратить потерю данных при перезапуске nodemon
+          await vectorStore.saveAll();
+          console.log(`Чанк ${savedChunks}/${processedChunks.length} сохранен для ${docId}`);
         }
       } catch (vectorError) {
         console.error(`Error adding chunk to vector store:`, vectorError);
       }
     }
-
+    
     console.log(`Added ${savedChunks}/${processedChunks.length} chunks to vector store for ${docId}`);
-
-    // Save vector store changes
-    vectorStore.saveAll();
+    
+    // Принудительно сохраняем изменения
+    await vectorStore.saveAll();
+    
+    // ВАЖНО: Проверяем, добавились ли векторы после сохранения
+    const stats = vectorStore.getStats();
+    console.log(`Vector store stats after saving: ${JSON.stringify(stats)}`);
 
     return {
       success: true,

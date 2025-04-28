@@ -77,11 +77,34 @@ function saveVectorIndex() {
 
 // Save both vector store and index
 async function saveAll() {
-  await saveVectorStore();
-  await saveVectorIndex();
-  
-  // Обновляем статистику при сохранении
-  console.log(`Сохранено ${vectorStore.length} векторов, ${Object.keys(vectorIndex).length} документов`);
+  try {
+    // Убедимся, что директория существует
+    ensureDataDirectoryExists();
+    
+    // Сохраняем векторы
+    fs.writeFileSync(VECTOR_DB_PATH, JSON.stringify(vectorStore), 'utf-8');
+    
+    // Сохраняем индекс
+    fs.writeFileSync(INDEX_FILE_PATH, JSON.stringify(vectorIndex), 'utf-8');
+    
+    console.log(`Сохранено ${vectorStore.length} векторов, ${Object.keys(vectorIndex).length} документов`);
+    
+    // ОТЛАДКА: выводим содержимое сохраненных файлов
+    if (fs.existsSync(VECTOR_DB_PATH)) {
+      const vectorStoreSize = fs.statSync(VECTOR_DB_PATH).size;
+      console.log(`Размер файла vector_store.json: ${vectorStoreSize} байт`);
+    }
+    
+    if (fs.existsSync(INDEX_FILE_PATH)) {
+      const indexSize = fs.statSync(INDEX_FILE_PATH).size;
+      console.log(`Размер файла vector_index.json: ${indexSize} байт`);
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Ошибка при сохранении векторного хранилища:', error);
+    return false;
+  }
 }
 
 // Set up periodic saving
