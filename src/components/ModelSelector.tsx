@@ -23,8 +23,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   
-  // Получаем данные выбранной модели
-  const selectedModelData = models.find(model => model.id === selectedModel);
+  // Проверяем, что models - это массив, перед использованием find
+  const selectedModelData = Array.isArray(models) 
+    ? models.find(model => model.id === selectedModel)
+    : undefined;
   
   // Функция для определения направления открытия выпадающего списка
   useEffect(() => {
@@ -58,6 +60,21 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [isOpen]);
+  
+  // Если models не массив или пуст, показываем отключенный селектор
+  if (!Array.isArray(models) || models.length === 0) {
+    return (
+      <div className="w-full">
+        <button
+          type="button"
+          className="w-full flex items-center justify-between px-3 py-2 border border-gray-700 rounded-md bg-input-bg text-white text-sm cursor-not-allowed opacity-70"
+          disabled
+        >
+          <span>Загрузка моделей...</span>
+        </button>
+      </div>
+    );
+  }
   
   return (
     <div className="relative">

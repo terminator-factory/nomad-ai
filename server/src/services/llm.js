@@ -40,11 +40,71 @@ function formatFileSize(bytes) {
 }
 
 /**
- * Get available models
- * @returns {Array} - List of available models
+ * Get available models by checking Ollama API
+ * @returns {Promise<Array>} - List of available models
  */
-const getAvailableModels = () => {
-  return AVAILABLE_MODELS;
+const getAvailableModels = async () => {
+  // Предустановленные модели
+  const DEFAULT_MODELS = [
+    { id: 'llama3', name: 'Ботагөз', description: 'Мудрая и грациозная. Идеальна для глубоких аналитических задач. \nЗнание русского: Базовое, но уверенно поддерживает общение.' },
+    { id: 'gemma3:4b', name: 'Жека', description: 'Сильный и умный. Отлично подходит для сложных запросов и высокоэффективных решений. \nЗнание русского: Хорошее, поддерживает точность и логику в ответах.' },
+    { id: 'gemma3:1b', name: 'Жемic', description: 'Лёгкая и быстрая. Подходит для повседневных задач и простых вопросов. \nЗнание русского: Базовое, для коротких и чётких ответов.' },
+    { id: 'mistral', name: 'Маке', description: 'Мощный и вдумчивый. Отлично решает сложные задачи и генерирует глубокие ответы. \nЗнание русского: Отличное, способен воспринимать и точно интерпретировать сложные запросы.' }
+  ];
+  
+  try {
+    // Получаем URL API из переменных окружения или используем стандартный
+    const llmApiUrl = process.env.LLM_API_URL || 'http://localhost:11434/api/generate';
+    const ollamaBaseUrl = llmApiUrl.replace('/api/generate', '');
+    
+    // Пытаемся получить список моделей из Ollama API
+    const response = await axios.get(`${ollamaBaseUrl}/api/tags`, { timeout: 3000 });
+    
+    if (response.data && response.data.models && response.data.models.length > 0) {
+      console.log(`Found ${response.data.models.length} models in Ollama API: ${response.data.models.map(m => m.name).join(', ')}`);
+      
+      // Создаем результирующий массив моделей
+      const resultModels = [];
+      
+      // Сначала добавляем модели из API, которые соответствуют предустановленным
+      DEFAULT_MODELS.forEach(defaultModel => {
+        // Ищем соответствующую модель в API по частичному совпадению
+        const matchingApiModel = response.data.models.find(m => 
+          m.name.toLowerCase().includes(defaultModel.id.toLowerCase()) ||
+          defaultModel.id.toLowerCase().includes(m.name.toLowerCase())
+        );
+        
+        if (matchingApiModel) {
+          // Если есть соответствие, добавляем модель с ID из API, но с нашим описанием
+          resultModels.push({
+            id: matchingApiModel.name,
+            name: defaultModel.name,
+            description: defaultModel.description
+          });
+          console.log(`Matched model: ${matchingApiModel.name} -> ${defaultModel.name}`);
+        } else if (defaultModel.id === 'gemma3:4b') {
+          // Всегда добавляем gemma3:4b как fallback
+          resultModels.push(defaultModel);
+          console.log(`Added default model: ${defaultModel.id}`);
+        }
+      });
+      
+      // Если ни одна модель не добавлена, используем все предустановленные
+      if (resultModels.length === 0) {
+        console.log('No matching models found, using all default models');
+        return DEFAULT_MODELS;
+      }
+      
+      // Возвращаем найденные модели
+      return resultModels;
+    }
+  } catch (error) {
+    console.warn('Could not fetch models from Ollama API:', error.message);
+  }
+  
+  // Вернуть предустановленные модели, если не удалось получить из API
+  console.log('Using default models');
+  return DEFAULT_MODELS;
 };
 
 /**

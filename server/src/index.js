@@ -18,18 +18,23 @@ const vectorStore = require('./services/vectorStore');
 const app = express();
 const server = http.createServer(app);
 
-// Настройка CORS для Socket.IO
+// Получаем разрешенные источники из переменных окружения или используем стандартные
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',') 
+  : ['http://localhost:3000', 'http://localhost:9090'];
+
+// Более гибкая настройка CORS для Socket.IO
 const io = socketIo(server, {
   cors: {
-    origin: ['http://10.15.123.137:9090', 'http://10.15.123.137:3000', 'http://localhost:3000'],
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
     credentials: true
   }
 });
 
-// Middleware
+// Middleware с теми же разрешенными источниками
 app.use(cors({
-  origin: ['http://10.15.123.137:9090', 'http://10.15.123.137:3000', 'http://localhost:3000'],
+  origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
@@ -74,13 +79,15 @@ app.get('/api/models', (req, res) => {
 });
 
 // API для базы знаний (Knowledge Base)
-app.get('/api/kb/documents', async (req, res) => {
+app.get('/api/models', async (req, res) => {
   try {
-    const documents = await fileManager.getAllFileMeta();
-    res.status(200).json({ documents });
+    const models = await llmService.getAvailableModels();
+    res.status(200).json({ models });
   } catch (error) {
-    console.error('Error getting KB documents:', error);
-    res.status(500).json({ error: 'Failed to retrieve knowledge base documents' });
+    console.error('Error fetching models:', error);
+    res.status(200).json({ models: [
+      { id: 'gemma3:4b', name: 'Жека', description: 'Модель по умолчанию' }
+    ]});
   }
 });
 

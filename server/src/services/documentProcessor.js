@@ -21,7 +21,7 @@ function calculateContentHash(content) {
     console.warn('Invalid content for hashing');
     return '';
   }
-  
+
   return crypto.createHash('md5').update(content).digest('hex');
 }
 
@@ -37,34 +37,34 @@ function splitIntoChunks(text, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP) 
     console.warn('Invalid text for chunking');
     return [];
   }
-  
+
   const chunks = [];
   let i = 0;
-  
+
   // Handle very short texts
   if (text.length <= chunkSize) {
     return [text];
   }
-  
+
   while (i < text.length) {
     // Calculate end position with potential overlap
     const end = Math.min(i + chunkSize, text.length);
     chunks.push(text.slice(i, end));
-    
+
     // Move to next chunk position, accounting for overlap
     i += chunkSize - overlap;
-    
+
     // If we're near the end, avoid tiny chunks
     if (i + chunkSize - overlap >= text.length) {
       break;
     }
   }
-  
+
   // Make sure we have at least one chunk
   if (chunks.length === 0 && text.length > 0) {
     chunks.push(text);
   }
-  
+
   return chunks;
 }
 
@@ -84,11 +84,11 @@ function processCSVContent(content) {
       sample: []
     };
   }
-  
+
   try {
     // Split into lines and filter out empty lines
     const lines = content.split('\n').filter(line => line.trim().length > 0);
-    
+
     if (lines.length === 0) {
       return {
         success: false,
@@ -99,21 +99,21 @@ function processCSVContent(content) {
         sample: []
       };
     }
-    
+
     // Get headers from first line
     const headers = parseCSVLine(lines[0]);
-    
+
     // Parse a sample of data rows (up to 20)
     const sampleSize = Math.min(20, lines.length - 1);
     const sample = [];
-    
+
     for (let i = 1; i <= sampleSize; i++) {
       if (i < lines.length) {
         const parsedLine = parseCSVLine(lines[i]);
         sample.push(parsedLine);
       }
     }
-    
+
     return {
       success: true,
       rowCount: lines.length - 1, // Exclude header row
@@ -142,15 +142,15 @@ function processCSVContent(content) {
  */
 function parseCSVLine(line) {
   if (!line) return [];
-  
+
   const result = [];
   let currentField = '';
   let inQuotes = false;
-  
+
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
     const nextChar = i < line.length - 1 ? line[i + 1] : null;
-    
+
     if (char === '"' && !inQuotes) {
       // Start of quoted field
       inQuotes = true;
@@ -172,10 +172,10 @@ function parseCSVLine(line) {
       currentField += char;
     }
   }
-  
+
   // Add the last field
   result.push(currentField);
-  
+
   return result;
 }
 
@@ -192,12 +192,12 @@ function splitIntoChunksWithFileType(text, fileType, chunkSize = CHUNK_SIZE, ove
     console.warn('Invalid text for chunking');
     return [];
   }
-  
+
   // For CSV files, we'll use a different chunking strategy
   if (fileType && (fileType.includes('csv') || fileType.endsWith('.csv'))) {
     return splitCSVIntoChunks(text, chunkSize, overlap);
   }
-  
+
   // Default chunking for other file types
   return splitIntoChunks(text, chunkSize, overlap);
 }
@@ -213,44 +213,44 @@ function splitCSVIntoChunks(csvText, chunkSize, overlap) {
   try {
     // Split into lines
     const lines = csvText.split('\n').filter(line => line.trim() !== '');
-    
+
     if (lines.length <= 1) {
       // Just header or empty file
       return [csvText];
     }
-    
+
     const headers = lines[0];
     const dataRows = lines.slice(1);
-    
+
     // Calculate how many rows to include per chunk
     const avgRowLength = dataRows.reduce((sum, row) => sum + row.length, 0) / dataRows.length;
     const rowsPerChunk = Math.max(1, Math.floor(chunkSize / avgRowLength));
     const rowsOverlap = Math.max(1, Math.floor(overlap / avgRowLength));
-    
+
     const chunks = [];
     let i = 0;
-    
+
     while (i < dataRows.length) {
       // Calculate end position
       const end = Math.min(i + rowsPerChunk, dataRows.length);
-      
+
       // Create chunk with headers + selected rows
       const chunkRows = [headers, ...dataRows.slice(i, end)];
       chunks.push(chunkRows.join('\n'));
-      
+
       // Move to next chunk position, accounting for overlap
       i += rowsPerChunk - rowsOverlap;
-      
+
       // If we're near the end, avoid tiny chunks
       if (i + rowsPerChunk - rowsOverlap >= dataRows.length) {
         break;
       }
     }
-    
+
     return chunks;
   } catch (error) {
     console.error('Error splitting CSV into chunks:', error);
-    
+
     // Fall back to standard chunking
     return splitIntoChunks(csvText, chunkSize, overlap);
   }
@@ -262,27 +262,27 @@ const originalProcessDocument = processDocument;
 async function processDocument(file, forceProcess = false) {
   try {
     console.log(`Processing document: ${file.name} (${file.size} bytes)`);
-    
+
     // Check if this is a CSV file
     const isCSV = file.type === 'text/csv' || file.name.toLowerCase().endsWith('.csv');
-    
+
     if (isCSV && file.content) {
       console.log(`Processing CSV file: ${file.name}`);
-      
+
       // Process CSV content for better understanding
       const csvInfo = processCSVContent(file.content);
-      
+
       if (csvInfo.success) {
         console.log(`CSV file analyzed: ${csvInfo.rowCount} rows, ${csvInfo.columnCount} columns`);
-        
+
         // Add CSV info to file object for better context later
         file.csvInfo = csvInfo;
       }
     }
-    
+
     // Handle the rest of document processing using the improved chunking method
     const fileType = file.type || (file.name ? file.name.split('.').pop() : '');
-    
+
     // Original validation and duplicate checking
     if (!file || !file.name) {
       return {
@@ -291,7 +291,7 @@ async function processDocument(file, forceProcess = false) {
         message: 'File object is missing required properties.'
       };
     }
-    
+
     if (!file.content || typeof file.content !== 'string') {
       console.error(`No content provided for file: ${file.name}`);
       return {
@@ -300,10 +300,10 @@ async function processDocument(file, forceProcess = false) {
         message: 'Document has no content to process.'
       };
     }
-    
+
     // Generate content hash
     const contentHash = calculateContentHash(file.content);
-    
+
     // Check if we've already processed this file
     const existingFile = await fileManager.findFileByHash(contentHash);
     if (existingFile && !forceProcess) {
@@ -315,7 +315,7 @@ async function processDocument(file, forceProcess = false) {
         message: 'Document with identical content already exists.'
       };
     }
-    
+
     // Generate document metadata
     const docId = uuidv4();
     const metadata = {
@@ -328,7 +328,7 @@ async function processDocument(file, forceProcess = false) {
       chunkCount: 0,
       isCSV: isCSV
     };
-    
+
     // If it's a CSV, add the CSV info to metadata
     if (isCSV && file.csvInfo) {
       metadata.csvInfo = {
@@ -337,28 +337,28 @@ async function processDocument(file, forceProcess = false) {
         headers: file.csvInfo.headers.join(',')
       };
     }
-    
+
     console.log(`Created metadata for document: ${docId} (${file.name})`);
-    
+
     // Split content into chunks with awareness of file type
     const chunks = splitIntoChunksWithFileType(file.content, fileType);
     console.log(`Split document into ${chunks.length} chunks`);
-    
+
     // Process each chunk and generate embeddings
     const processedChunks = [];
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       const chunkId = `${docId}-chunk-${i}`;
-      
+
       try {
         // Generate embedding for chunk
         const embedding = await embeddings.generateEmbedding(chunk);
-        
+
         if (!embedding || !Array.isArray(embedding)) {
           console.error(`Failed to generate embedding for chunk ${i} of ${docId}`);
           continue;
         }
-        
+
         const chunkMetadata = {
           ...metadata,
           chunkId,
@@ -366,24 +366,24 @@ async function processDocument(file, forceProcess = false) {
           chunkSize: chunk.length,
           chunkTotal: chunks.length
         };
-        
+
         processedChunks.push({
           id: chunkId,
           text: chunk,
           embedding,
           metadata: chunkMetadata
         });
-        
+
         console.log(`Processed chunk ${i + 1}/${chunks.length} for ${docId}`);
       } catch (chunkError) {
         console.error(`Error processing chunk ${i} of ${docId}:`, chunkError);
       }
     }
-    
+
     // Save document metadata
     metadata.chunkCount = processedChunks.length;
     const saveResult = await fileManager.saveFileMeta(metadata, file.content);
-    
+
     if (!saveResult) {
       console.error(`Failed to save metadata for ${docId}`);
       return {
@@ -392,25 +392,32 @@ async function processDocument(file, forceProcess = false) {
         message: 'Could not save document metadata to disk.'
       };
     }
-    
+
     console.log(`Saved metadata for ${docId} with ${processedChunks.length} chunks`);
-    
+
     // Save all chunks to vector store
     let savedChunks = 0;
     for (const chunk of processedChunks) {
       try {
         const added = await vectorStore.addChunk(chunk);
-        if (added) savedChunks++;
+        if (added) {
+          savedChunks++;
+          // Принудительно сохраняем после каждого 10-го чанка
+          if (savedChunks % 10 === 0) {
+            await vectorStore.saveAll();
+            console.log(`Сохранено ${savedChunks} чанков`);
+          }
+        }
       } catch (vectorError) {
         console.error(`Error adding chunk to vector store:`, vectorError);
       }
     }
-    
+
     console.log(`Added ${savedChunks}/${processedChunks.length} chunks to vector store for ${docId}`);
-    
+
     // Save vector store changes
     vectorStore.saveAll();
-    
+
     return {
       success: true,
       isDuplicate: false,
@@ -438,7 +445,7 @@ async function processDocument(file, forceProcess = false) {
 async function searchRelevantChunks(query, limit = 5) {
   try {
     console.log(`Searching for chunks relevant to query: "${query}"`);
-    
+
     if (!query || typeof query !== 'string' || query.trim() === '') {
       console.warn('Empty or invalid search query');
       return {
@@ -448,10 +455,10 @@ async function searchRelevantChunks(query, limit = 5) {
         message: 'Search query is empty or invalid.'
       };
     }
-    
+
     // Generate embedding for query
     const queryEmbedding = await embeddings.generateEmbedding(query);
-    
+
     if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
       console.error('Failed to generate embedding for query');
       return {
@@ -461,17 +468,17 @@ async function searchRelevantChunks(query, limit = 5) {
         message: 'Could not generate vector embedding for query.'
       };
     }
-    
+
     // Search vector store for similar chunks
     const results = await vectorStore.similaritySearch(queryEmbedding, limit);
-    
+
     console.log(`Found ${results.length} relevant chunks for query`);
-    
+
     // For debugging, show similarity scores
     if (results.length > 0) {
       console.log('Top result similarity:', results[0].score);
     }
-    
+
     return {
       success: true,
       results,

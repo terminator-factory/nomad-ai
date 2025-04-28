@@ -4,7 +4,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: elkazajo/client-client:latest
     ports:
       - "9090:80"
     depends_on:
@@ -18,14 +17,15 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
-    image: elkazajo/client-server:latest
     ports:
       - "3001:3001"
     environment:
       - PORT=3001
       - LLM_API_URL=http://localhost:11434/api/generate
+      - ALLOWED_ORIGINS=http://localhost:9090,http://localhost:3000
     volumes:
       - ./server/uploads:/app/server/uploads
+      - ./server/data:/app/server/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

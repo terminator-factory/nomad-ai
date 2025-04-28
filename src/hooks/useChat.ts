@@ -144,15 +144,25 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     const fetchModels = async () => {
       try {
         const response = await axios.get(`${SOCKET_URL}/api/models`);
-        if (response.data && response.data.models) {
+        if (response.data && Array.isArray(response.data.models)) {
           setModels(response.data.models);
-          // Set default model if available
+          // Установка модели по умолчанию, если доступна
           if (response.data.models.length > 0) {
             setSelectedModel(response.data.models[0].id);
           }
+        } else {
+          // Если ответ не массив, устанавливаем модели по умолчанию
+          console.error('Invalid models response:', response.data);
+          setModels([
+            { id: 'gemma3:4b', name: 'Gemma 3 4B', description: 'Модель по умолчанию' }
+          ]);
         }
       } catch (error) {
         console.error('Error loading models:', error);
+        // Установка моделей по умолчанию в случае ошибки
+        setModels([
+          { id: 'gemma3:4b', name: 'Gemma 3 4B', description: 'Модель по умолчанию' }
+        ]);
       }
     };
 

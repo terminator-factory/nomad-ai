@@ -76,9 +76,12 @@ function saveVectorIndex() {
 }
 
 // Save both vector store and index
-function saveAll() {
-  saveVectorStore();
-  saveVectorIndex();
+async function saveAll() {
+  await saveVectorStore();
+  await saveVectorIndex();
+  
+  // Обновляем статистику при сохранении
+  console.log(`Сохранено ${vectorStore.length} векторов, ${Object.keys(vectorIndex).length} документов`);
 }
 
 // Set up periodic saving

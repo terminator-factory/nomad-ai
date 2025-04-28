@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
-// ВАЖНОЕ ИЗМЕНЕНИЕ: используем path.join и ../data вместо предыдущего пути
+// Используем корректный путь к данным
 const DATA_DIR = path.join(__dirname, '../../data');
 const METADATA_DIR = path.join(DATA_DIR, 'metadata');
 const CONTENT_DIR = path.join(DATA_DIR, 'content');
