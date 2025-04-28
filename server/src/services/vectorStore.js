@@ -3,9 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const { cosineSimilarity } = require('./embeddings');
 
-// Vector storage path
-const VECTOR_DB_PATH = path.join(__dirname, '../data/vector_store.json');
-const INDEX_FILE_PATH = path.join(__dirname, '../data/vector_index.json');
+// Исправленный путь: используем ../data вместо предыдущего пути
+const VECTOR_DB_PATH = path.join(__dirname, '../../data/vector_store.json');
+const INDEX_FILE_PATH = path.join(__dirname, '../../data/vector_index.json');
 
 // In-memory storage for vectors and their metadata
 let vectorStore = [];

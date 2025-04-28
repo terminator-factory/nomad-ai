@@ -3,8 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 
-// File storage paths - use path.join for cross-platform compatibility
-const DATA_DIR = path.join(__dirname, '../data');
+// ВАЖНОЕ ИЗМЕНЕНИЕ: используем path.join и ../data вместо предыдущего пути
+const DATA_DIR = path.join(__dirname, '../../data');
 const METADATA_DIR = path.join(DATA_DIR, 'metadata');
 const CONTENT_DIR = path.join(DATA_DIR, 'content');
 const HASH_INDEX_PATH = path.join(DATA_DIR, 'hash_index.json');

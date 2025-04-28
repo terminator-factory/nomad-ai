@@ -9,7 +9,7 @@ const LOCAL_EMBEDDING_SIZE = 384;
 
 // Cache for embeddings
 const embeddingCache = new Map();
-const CACHE_FILE_PATH = path.join(__dirname, '../data/embedding_cache.json');
+const CACHE_FILE_PATH = path.join(__dirname, '../../data/embedding_cache.json');
 
 // Ensure cache directory exists
 function ensureCacheDirectoryExists() {
@@ -143,37 +143,49 @@ function generateLocalEmbedding(text) {
  */
 async function getExternalEmbedding(text) {
   try {
-    // Fix: Safely handle undefined LLM_API_URL
+    // ИЗМЕНЕНО: Используем текущий LLM URL для запроса эмбеддингов
+    // Если Ollama не поддерживает эмбеддинги, просто вернем null и будем использовать локальные
     const llmApiUrl = process.env.LLM_API_URL || 'http://localhost:11434/api/generate';
-    let llmBaseUrl = llmApiUrl;
+    let ollamaBaseUrl = 'http://localhost:11434'; // Базовый URL для Ollama
     
-    // Extract base URL from API URL
-    if (llmApiUrl.includes('/api/generate')) {
-      llmBaseUrl = llmApiUrl.replace('/api/generate', '');
+    // Пробуем извлечь базовый URL из API URL
+    if (llmApiUrl.includes('localhost') || llmApiUrl.includes('127.0.0.1')) {
+      const urlParts = llmApiUrl.split('/');
+      if (urlParts.length >= 3) {
+        const protocol = urlParts[0];
+        const host = urlParts[2];
+        ollamaBaseUrl = `${protocol}//${host}`;
+      }
     }
     
-    const embeddingUrl = `${llmBaseUrl}/api/embeddings`;
+    const embeddingUrl = `${ollamaBaseUrl}/api/embeddings`;
     
-    console.log(`Requesting embedding from ${embeddingUrl}`);
+    console.log(`Trying to get embedding from: ${embeddingUrl}`);
     
+    // Уменьшаем таймаут до 5 секунд
     const response = await axios.post(embeddingUrl, {
-      model: 'all-MiniLM-L6-v2', // Example model
-      prompt: text  // Ollama expects 'prompt' not 'text'
+      model: 'all-MiniLM-L6-v2', // Стандартная модель для эмбеддингов
+      prompt: text
     }, {
-      timeout: 10000 // 10 second timeout
+      timeout: 5000 // 5-секундный таймаут
     });
     
-    // Handle different API response formats
+    // Обрабатываем разные форматы ответа API
     if (response.data && response.data.embedding) {
       return response.data.embedding;
     } else if (response.data && response.data.embeddings) {
       return response.data.embeddings;
     } else {
-      console.warn('Unexpected embedding API response format:', response.data);
+      console.warn('Unexpected embedding API response format, fallback to local embeddings');
       return null;
     }
   } catch (error) {
-    console.warn('Error getting external embedding, falling back to local:', error.message);
+    // Если ошибка 404, значит API не поддерживает эмбеддинги
+    if (error.response && error.response.status === 404) {
+      console.log('Embedding API not available (404), using local embeddings');
+    } else {
+      console.warn(`Error getting external embedding: ${error.message}, using local embeddings`);
+    }
     return null;
   }
 }
@@ -201,8 +213,18 @@ async function generateEmbedding(text) {
     return embeddingCache.get(textHash);
   }
   
-  // Try external API first, fall back to local implementation
-  const embedding = await getExternalEmbedding(normalizedText) || generateLocalEmbedding(normalizedText);
+  // Try external API first, but always use local if not available
+  let embedding = null;
+  
+  // Если текст очень длинный (более 10000 символов), сразу используем локальные эмбеддинги
+  if (normalizedText.length <= 10000) {
+    embedding = await getExternalEmbedding(normalizedText);
+  }
+  
+  // Если не получили эмбеддинги из API, генерируем локально
+  if (!embedding) {
+    embedding = generateLocalEmbedding(normalizedText);
+  }
   
   // Cache the result
   embeddingCache.set(textHash, embedding);
