@@ -44,7 +44,7 @@ NoMadAI - это полнофункциональное приложение д�
 
 1. **Клонирование репозитория**
    ```bash
-   git clone https://github.com/username/nomad-ai.git
+   git clone https://github.com/terminator-factory/nomad-ai.git
    cd nomad-ai
    ```
 
