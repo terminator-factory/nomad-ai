@@ -1,36 +1,66 @@
-# docker-compose.yml
+version: "3.8"
+
 services:
-  client:
+  # Frontend сервис на React
+  frontend:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "9090:80"
     depends_on:
-      - server
+      - backend
     environment:
       - REACT_APP_SOCKET_URL=http://localhost:3001
     networks:
       - app-network
 
-  server:
+  # Backend сервис на FastAPI/Python
+  backend:
     build:
-      context: .
-      dockerfile: server/Dockerfile
+      context: ./backend
+      dockerfile: Dockerfile
     ports:
       - "3001:3001"
     environment:
       - PORT=3001
-      - LLM_API_URL=http://localhost:11434/api/generate
+      - LLM_API_URL=http://host.docker.internal:11434/api
       - ALLOWED_ORIGINS=http://localhost:9090,http://localhost:3000
+      - RAG_ENABLED=true
+      - DEBUG=false
     volumes:
-      - ./server/uploads:/app/server/uploads
-      - ./server/data:/app/server/data
+      - ./backend/data:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  # Опционально: Локальный сервис Ollama
+  # Раскомментируйте, если хотите запускать Ollama в Docker
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
 
 networks:
   app-network:
     driver: bridge
+
+# Volumes для хранения данных
+volumes:
+  ollama-data:

@@ -1,46 +1,140 @@
-# Getting Started with Create React App
+# NoMadAI - Чат-интерфейс с локальными LLM и RAG
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+<div align="center">
+  <img src="public/logo512.png" alt="NoMadAI Logo" width="200" height="200">
+</div>
 
-## Available Scripts
+NoMadAI - это полнофункциональное приложение для взаимодействия с языковыми моделями (LLM) через удобный чат-интерфейс. Оно поддерживает локальные LLM через [Ollama](https://ollama.com/) и включает возможности Retrieval-Augmented Generation (RAG) для работы с загруженными документами.
 
-In the project directory, you can run:
+## 🌟 Возможности
 
-### `npm start`
+- **Современный чат-интерфейс** с поддержкой Markdown и подсветкой синтаксиса
+- **Поддержка локальных LLM** через интеграцию с Ollama
+- **RAG (Retrieval-Augmented Generation)** для работы с базой знаний документов
+- **Загрузка документов** с автоматической обработкой текста, CSV и других форматов
+- **Управление сессиями** для сохранения и переключения между разными чатами
+- **Мультиязычная поддержка** с полной поддержкой русского языка
+- **Веб-интерфейс** для просмотра и управления загруженными документами
+- **Контейнеризация** через Docker для простого развертывания
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+## 🛠️ Технологический стек
 
-The page will reload if you make edits.\
-You will also see any lint errors in the console.
+### Фронтенд:
+- **React** с TypeScript
+- **Tailwind CSS** для стилизации
+- **Socket.IO Client** для real-time взаимодействия
 
-### `npm test`
+### Бэкенд:
+- **Python** с FastAPI
+- **LangChain** для работы с LLM и RAG
+- **FAISS** для векторного хранилища
+- **SQLite** для хранения метаданных
+- **WebSockets** для потоковой передачи ответов
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## 📋 Требования
 
-### `npm run build`
+- **Node.js** 16.x или выше
+- **Python** 3.9 или выше
+- **Ollama** для запуска локальных LLM (рекомендуется)
+- **Docker и Docker Compose** (опционально)
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+## 🚀 Быстрый старт
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+### Запуск для разработки
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+1. **Клонирование репозитория**
+   ```bash
+   git clone https://github.com/username/nomad-ai.git
+   cd nomad-ai
+   ```
 
-### `npm run eject`
+2. **Запуск скрипта для разработки**
+   ```bash
+   chmod +x dev.sh
+   ./dev.sh
+   ```
 
-**Note: this is a one-way operation. Once you `eject`, you can’t go back!**
+   Скрипт автоматически настроит окружение и запустит как фронтенд, так и бэкенд.
 
-If you aren’t satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### Запуск с использованием Docker
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you’re on your own.
+1. **Сборка и запуск контейнеров**
+   ```bash
+   docker-compose up --build
+   ```
 
-You don’t have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn’t feel obligated to use this feature. However we understand that this tool wouldn’t be useful if you couldn’t customize it when you are ready for it.
+2. **Доступ к приложению**
+   Откройте браузер и перейдите по адресу [http://localhost:9090](http://localhost:9090)
 
-## Learn More
+## 📚 Использование базы знаний (RAG)
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+1. Запустите приложение и перейдите на вкладку Knowledge Base (нажав на кнопку "KB")
+2. Загрузите файлы через интерфейс загрузки
+3. Задавайте вопросы, связанные с содержимым загруженных документов
+4. Система автоматически найдет релевантную информацию и включит ее в ответ
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+## 🔧 Конфигурация
+
+### Фронтенд (.env.development)
+```
+PORT=3000
+REACT_APP_SOCKET_URL=http://localhost:3001
+```
+
+### Бэкенд (backend/.env)
+```
+LLM_API_URL=http://localhost:11434/api
+PORT=3001
+RAG_ENABLED=true
+```
+
+Полный список настроек доступен в файле `.env.example`.
+
+## 🤝 Интеграция с Ollama
+
+NoMadAI оптимизирован для работы с [Ollama](https://ollama.com/) для запуска локальных LLM:
+
+1. Установите Ollama с [официального сайта](https://ollama.com/download)
+2. Запустите Ollama сервер: `ollama serve`
+3. Загрузите модель: `ollama pull gemma3:4b` (или другую предпочитаемую модель)
+4. Запустите NoMadAI и начните общение с LLM
+
+## 🌐 Поддерживаемые модели
+
+- **Gemma** (gemma3:4b, gemma3:1b)
+- **Llama** (llama3)
+- **Mistral** (mistral)
+- **И другие модели, поддерживаемые Ollama**
+
+Модели должны быть предварительно загружены в Ollama.
+
+## 📝 Поддерживаемые типы файлов для RAG
+
+- Текстовые файлы (.txt)
+- CSV файлы (.csv)
+- Markdown (.md)
+- HTML (.html, .htm)
+- JSON (.json)
+- JavaScript/TypeScript (.js, .ts, .jsx, .tsx)
+
+## 🤔 Устранение неполадок
+
+### Бэкенд не подключается к Ollama
+Убедитесь, что Ollama запущен и доступен по адресу `http://localhost:11434`.
+
+### Проблемы с WebSocket
+Проверьте, что переменная окружения `REACT_APP_SOCKET_URL` указывает на правильный адрес бэкенда.
+
+### Дополнительная помощь
+Более подробная информация по устранению неполадок доступна в файле `ИНТЕГРАЦИЯ.md`.
+
+## 📄 Лицензия
+
+Этот проект распространяется под лицензией MIT. См. файл LICENSE для получения дополнительной информации.
+
+## 🙏 Благодарности
+
+- [LangChain](https://github.com/hwchase17/langchain) - за отличный фреймворк для работы с LLM
+- [Ollama](https://github.com/ollama/ollama) - за простой запуск локальных LLM
+- [FastAPI](https://github.com/tiangolo/fastapi) - за эффективный бэкенд
+- [React](https://github.com/facebook/react) - за фронтенд-фреймворк

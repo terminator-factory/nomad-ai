@@ -1,7 +1,6 @@
-// src/hooks/useChat.ts - Updated with RAG support and fixed TypeScript errors
+// src/hooks/useChat.ts - Обновленная версия для работы с Python/FastAPI бэкендом
 import { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import io, { Socket } from 'socket.io-client';
 import axios from 'axios';
 import { Message, FileAttachment, ChatSession } from '../types';
 
@@ -28,6 +27,10 @@ interface KnowledgeBaseDocument {
   chunkCount: number;
 }
 
+// Настраиваем WebSocket URL
+const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001';
+const WS_URL = SOCKET_URL.replace(/^http/, 'ws');
+
 const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = {}) => {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -48,133 +51,145 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   // Duplicate file tracking
   const [duplicateFiles, setDuplicateFiles] = useState<{ [fileName: string]: string }>({});
 
-  const socketRef = useRef<Socket | null>(null);
+  const webSocketRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001';
+
+  // Обработчик сообщений WebSocket
+  const handleWebsocketMessage = (event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data);
+      const messageType = data.type;
+
+      switch (messageType) {
+        case 'message-chunk':
+          // Обрабатываем чанк сообщения
+          setMessages(prevMessages => {
+            const newMessages = [...prevMessages];
+            const lastMessage = newMessages[newMessages.length - 1];
+
+            if (lastMessage && lastMessage.role === 'assistant') {
+              // Дополняем существующее сообщение
+              const updatedMessage: Message = {
+                ...lastMessage,
+                content: lastMessage.content + data.content
+              };
+              newMessages[newMessages.length - 1] = updatedMessage;
+
+              // Обновляем сессию
+              updateSessionWithMessage(updatedMessage);
+              return newMessages;
+            } else {
+              // Создаем новое сообщение
+              const newAssistantMessage: Message = {
+                id: uuidv4(),
+                role: 'assistant',
+                content: data.content,
+                timestamp: new Date()
+              };
+              newMessages.push(newAssistantMessage);
+
+              // Обновляем сессию
+              updateSessionWithMessage(newAssistantMessage);
+              return newMessages;
+            }
+          });
+          break;
+
+        case 'message-complete':
+          // Завершаем генерацию
+          setIsLoading(false);
+          break;
+
+        case 'error':
+          // Обрабатываем ошибку
+          setError(data.error);
+          setIsLoading(false);
+          break;
+
+        case 'kb-documents':
+          // Обновляем список документов в базе знаний
+          setKnowledgeBaseDocuments(data.documents || []);
+          setIsKnowledgeBaseLoading(false);
+          break;
+
+        case 'kb-document-deleted':
+          // Удаляем документ из списка
+          setKnowledgeBaseDocuments(prev =>
+            prev.filter(doc => doc.id !== data.documentId)
+          );
+          break;
+
+        default:
+          console.warn(`Получен неизвестный тип сообщения: ${messageType}`);
+      }
+    } catch (error) {
+      console.error('Ошибка при обработке сообщения WebSocket:', error);
+    }
+  };
 
   useEffect(() => {
-    // Connect to Socket.IO server
-    socketRef.current = io(SOCKET_URL);
+    // Подключение к WebSocket серверу
+    const connectWebSocket = () => {
+      const ws = new WebSocket(`${WS_URL}/ws`);
+      webSocketRef.current = ws;
 
-    // Handle incoming message streams
-    socketRef.current.on('message-chunk', (chunk: string) => {
-      setMessages(prevMessages => {
-        const newMessages = [...prevMessages];
-        const lastMessage = newMessages[newMessages.length - 1];
+      ws.onopen = () => {
+        console.log('WebSocket соединение установлено');
+        
+        // После подключения запрашиваем модели и документы базы знаний
+        loadModels();
+        loadKnowledgeBaseDocuments();
+      };
 
-        if (lastMessage && lastMessage.role === 'assistant') {
-          // Append to existing message
-          const updatedMessage: Message = {
-            ...lastMessage,
-            content: lastMessage.content + chunk
-          };
-          newMessages[newMessages.length - 1] = updatedMessage;
+      ws.onmessage = handleWebsocketMessage;
 
-          // Обновляем сессию с каждым чанком
-          updateSessionWithMessage(updatedMessage);
+      ws.onerror = (error) => {
+        console.error('Ошибка WebSocket:', error);
+        setError('Ошибка соединения с сервером. Попробуйте перезагрузить страницу.');
+        
+        // Пробуем переподключиться через RESTful API
+        loadModels();
+      };
 
-          return newMessages;
-        } else {
-          // Create new message
-          const newAssistantMessage: Message = {
-            id: uuidv4(),
-            role: 'assistant',
-            content: chunk,
-            timestamp: new Date()
-          };
-          newMessages.push(newAssistantMessage);
+      ws.onclose = () => {
+        console.log('WebSocket соединение закрыто');
+        
+        // Пробуем переподключиться через 3 секунды
+        setTimeout(() => {
+          if (webSocketRef.current === ws) {
+            connectWebSocket();
+          }
+        }, 3000);
+      };
+    };
 
-          // Обновляем сессию с новым сообщением
-          updateSessionWithMessage(newAssistantMessage);
+    connectWebSocket();
 
-          return newMessages;
-        }
-      });
-    });
-
-    socketRef.current.on('message-complete', () => {
-      setIsLoading(false);
-    });
-
-    socketRef.current.on('error', (errorMsg: string) => {
-      setError(errorMsg);
-      setIsLoading(false);
-    });
-
-    // Listen for file status updates (e.g., duplicate files)
-    socketRef.current.on('file-status', (data: { fileName: string; status: string; existingFileName?: string }) => {
-      if (data.status === 'duplicate' && data.existingFileName) {
-        // Ensure existingFileName is treated as a non-optional string
-        const fileName = data.fileName;
-        const existingName = data.existingFileName as string; // Type assertion
-
-        setDuplicateFiles(prev => {
-          // Create a new object with the explicit string type
-          const newState: { [fileName: string]: string } = { ...prev };
-          newState[fileName] = existingName;
-          return newState;
-        });
-      }
-    });
-
-    // Listen for knowledge base updates
-    socketRef.current.on('kb-documents', (data: { documents: KnowledgeBaseDocument[] }) => {
-      setKnowledgeBaseDocuments(data.documents || []);
-      setIsKnowledgeBaseLoading(false);
-    });
-
-    socketRef.current.on('kb-document-deleted', (data: { documentId: string }) => {
-      setKnowledgeBaseDocuments(prev =>
-        prev.filter(doc => doc.id !== data.documentId)
-      );
-    });
-
-    socketRef.current.on('kb-error', (data: { message: string }) => {
-      setError(data.message);
-      setIsKnowledgeBaseLoading(false);
-    });
-
-    // Load sessions from local storage
+    // Загружаем сессии из локального хранилища
     const savedSessions = localStorage.getItem('chatSessions');
     if (savedSessions) {
       setSessions(JSON.parse(savedSessions));
     }
 
-    // Load available models
-    const fetchModels = async () => {
-      try {
-        const response = await axios.get(`${SOCKET_URL}/api/models`);
-        console.log('Models response from server:', response.data);
-
-        if (response.data && Array.isArray(response.data.models) && response.data.models.length > 0) {
-          setModels(response.data.models);
-          // Установка модели по умолчанию, если доступна
-          setSelectedModel(response.data.models[0].id);
-        } else {
-          // Если ответ некорректный, устанавливаем модели по умолчанию
-          console.error('Invalid models response:', response.data);
-          setModels([
-            { id: 'gemma3:4b', name: 'Gemma 3 4B', description: 'Модель по умолчанию' }
-          ]);
-        }
-      } catch (error) {
-        console.error('Error loading models:', error);
-        // Установка моделей по умолчанию в случае ошибки
-        setModels([
-          { id: 'gemma3:4b', name: 'Gemma 3 4B', description: 'Модель по умолчанию' }
-        ]);
+    return () => {
+      // Закрываем соединение при размонтировании
+      if (webSocketRef.current) {
+        webSocketRef.current.close();
       }
     };
+  }, []);
 
-    fetchModels();
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-    // Initial load of knowledge base documents
-    loadKnowledgeBaseDocuments();
-
-    return () => {
-      socketRef.current?.disconnect();
-    };
-  }, [SOCKET_URL]);
+  // Save sessions to local storage
+  useEffect(() => {
+    if (sessions.length > 0) {
+      localStorage.setItem('chatSessions', JSON.stringify(sessions));
+    }
+  }, [sessions]);
 
   // Helper function to update session with message
   const updateSessionWithMessage = (message: Message) => {
@@ -208,79 +223,94 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
       // Save updated sessions to localStorage
       localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
-
       return updatedSessions;
     });
   };
 
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  // Save sessions to local storage
-  useEffect(() => {
-    if (sessions.length > 0) {
-      localStorage.setItem('chatSessions', JSON.stringify(sessions));
-    }
-  }, [sessions]);
-
-  // Load knowledge base documents
-  const loadKnowledgeBaseDocuments = async () => {
-    setIsKnowledgeBaseLoading(true);
-
-    if (socketRef.current) {
-      socketRef.current.emit('kb-get-documents');
-    } else {
-      try {
-        const response = await axios.get(`${SOCKET_URL}/api/kb/documents`);
-        setKnowledgeBaseDocuments(response.data.documents || []);
-      } catch (error) {
-        console.error('Error loading knowledge base documents:', error);
-        setError('Failed to load knowledge base documents');
-      } finally {
-        setIsKnowledgeBaseLoading(false);
-      }
-    }
-
-    // Also load stats
+  // Загрузка доступных моделей
+  const loadModels = async () => {
     try {
-      const response = await axios.get(`${SOCKET_URL}/api/kb/stats`);
-      setKnowledgeBaseStats(response.data.knowledgeBase.vectorStats);
+      const response = await axios.get(`${SOCKET_URL}/api/models`);
+      if (response.data && Array.isArray(response.data.models)) {
+        setModels(response.data.models);
+        
+        // Устанавливаем модель по умолчанию, если доступна
+        if (response.data.models.length > 0) {
+          setSelectedModel(response.data.models[0].id);
+        }
+      }
     } catch (error) {
-      console.error('Error loading knowledge base stats:', error);
+      console.error('Ошибка при загрузке моделей:', error);
+      // Устанавливаем модели по умолчанию в случае ошибки
+      setModels([
+        { id: 'gemma3:4b', name: 'Жека', description: 'Модель по умолчанию' }
+      ]);
     }
   };
 
-  // Delete document from knowledge base
-  const deleteKnowledgeBaseDocument = async (documentId: string) => {
-    if (socketRef.current) {
-      socketRef.current.emit('kb-delete-document', { documentId });
-    } else {
+  // Загрузка документов базы знаний
+  const loadKnowledgeBaseDocuments = async () => {
+    setIsKnowledgeBaseLoading(true);
+
+    try {
+      // Пробуем получить документы через WebSocket
+      if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
+        webSocketRef.current.send(JSON.stringify({ type: 'kb-get-documents' }));
+      } else {
+        // Запасной вариант через REST API
+        const response = await axios.get(`${SOCKET_URL}/api/kb/documents`);
+        setKnowledgeBaseDocuments(response.data.documents || []);
+        setIsKnowledgeBaseLoading(false);
+      }
+
+      // Также загружаем статистику
       try {
+        const statsResponse = await axios.get(`${SOCKET_URL}/api/kb/stats`);
+        setKnowledgeBaseStats(statsResponse.data.knowledgeBase.vectorStats);
+      } catch (error) {
+        console.error('Ошибка при загрузке статистики базы знаний:', error);
+      }
+    } catch (error) {
+      console.error('Ошибка при загрузке документов базы знаний:', error);
+      setError('Не удалось загрузить документы базы знаний');
+      setIsKnowledgeBaseLoading(false);
+    }
+  };
+
+  // Удаление документа из базы знаний
+  const deleteKnowledgeBaseDocument = async (documentId: string) => {
+    try {
+      // Пробуем удалить через WebSocket
+      if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
+        webSocketRef.current.send(JSON.stringify({ 
+          type: 'kb-delete-document', 
+          documentId 
+        }));
+      } else {
+        // Запасной вариант через REST API
         await axios.delete(`${SOCKET_URL}/api/kb/documents/${documentId}`);
         setKnowledgeBaseDocuments(prev =>
           prev.filter(doc => doc.id !== documentId)
         );
-      } catch (error) {
-        console.error('Error deleting document:', error);
-        setError('Failed to delete document');
       }
+    } catch (error) {
+      console.error('Ошибка при удалении документа:', error);
+      setError('Не удалось удалить документ');
     }
   };
 
+  // Отправка сообщения
   const sendMessage = async (content: string) => {
-    if (!content.trim() && attachments.length === 0) return;
+    if ((!content.trim() && attachments.length === 0) || !webSocketRef.current) return;
 
-    // If already generating, stop first
+    // Если уже идет генерация, останавливаем
     if (isLoading) {
       stopGeneration();
-
-      // Short delay to let server process the stop request
+      // Даем время серверу обработать запрос остановки
       await new Promise(resolve => setTimeout(resolve, 200));
     }
 
-    // Create user message
+    // Создаем сообщение пользователя
     const userMessage: Message = {
       id: uuidv4(),
       role: 'user',
@@ -288,7 +318,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       timestamp: new Date()
     };
 
-    // Create empty assistant message
+    // Создаем пустое сообщение ассистента
     const emptyAssistantMessage: Message = {
       id: uuidv4(),
       role: 'assistant',
@@ -296,15 +326,15 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       timestamp: new Date()
     };
 
-    // Update local message array
+    // Обновляем локальный массив сообщений
     setMessages(prev => {
-      // Check if there's already an empty assistant message at the end
+      // Проверяем, есть ли уже пустое сообщение ассистента в конце
       const lastMessage = prev[prev.length - 1];
       if (lastMessage && lastMessage.role === 'assistant' && lastMessage.content === '') {
-        // Replace it with new message pair
+        // Заменяем его новой парой сообщений
         return [...prev.slice(0, -1), userMessage, emptyAssistantMessage];
       }
-      // Otherwise just add new messages
+      // Иначе просто добавляем новые сообщения
       return [...prev, userMessage, emptyAssistantMessage];
     });
 
@@ -312,47 +342,50 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     setError(null);
 
     try {
-      // Prepare message history for API
+      // Подготовка истории сообщений для API
       const messageHistory = messages.map(msg => ({
         role: msg.role,
         content: msg.content
       }));
 
-      // Add new user message
+      // Добавляем новое сообщение пользователя
       messageHistory.push({
         role: 'user',
         content
       });
 
-      // Clear duplicate files state when sending a message
+      // Сбрасываем информацию о дубликатах файлов
       setDuplicateFiles({});
 
-      // Send message via Socket.IO with selected model
-      socketRef.current?.emit('chat-message', {
+      // Отправляем сообщение через WebSocket
+      const messageData = {
+        type: 'chat-message',
         sessionId: currentSessionId,
         messages: messageHistory,
         attachments,
         model: selectedModel
-      });
+      };
 
-      // Clear attachments after sending
+      webSocketRef.current.send(JSON.stringify(messageData));
+
+      // Очищаем вложения после отправки
       setAttachments([]);
 
-      // Update or create session
+      // Обновляем или создаем сессию
       const sessionExists = sessions.some(session => session.id === currentSessionId);
       if (sessionExists) {
         setSessions(prevSessions =>
           prevSessions.map(session =>
             session.id === currentSessionId
               ? {
-                ...session,
-                messages: [...session.messages.filter(msg =>
-                  // Remove any empty assistant messages before adding new ones
-                  !(msg.role === 'assistant' && msg.content === '')
-                ), userMessage, emptyAssistantMessage],
-                updatedAt: new Date(),
-                title: content.slice(0, 30) + (content.length > 30 ? '...' : '')
-              }
+                  ...session,
+                  messages: [...session.messages.filter(msg =>
+                    // Удаляем пустые сообщения ассистента перед добавлением новых
+                    !(msg.role === 'assistant' && msg.content === '')
+                  ), userMessage, emptyAssistantMessage],
+                  updatedAt: new Date(),
+                  title: content.slice(0, 30) + (content.length > 30 ? '...' : '')
+                }
               : session
           )
         );
@@ -367,34 +400,36 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         setSessions(prev => [...prev, newSession]);
       }
 
-      // Save sessions to localStorage after update
+      // Сохраняем сессии в localStorage
       setTimeout(() => {
         localStorage.setItem('chatSessions', JSON.stringify(sessions));
       }, 100);
 
     } catch (err) {
-      setError('Failed to send message. Please try again.');
+      console.error('Ошибка при отправке сообщения:', err);
+      setError('Не удалось отправить сообщение. Проверьте соединение и попробуйте снова.');
       setIsLoading(false);
 
-      // Remove empty assistant message on error
+      // Удаляем пустое сообщение ассистента при ошибке
       setMessages(prev => prev.filter(msg =>
         !(msg.id === emptyAssistantMessage.id && msg.content === '')
       ));
     }
   };
 
-  // Stop generation
+  // Остановка генерации
   const stopGeneration = () => {
-    if (socketRef.current) {
-      console.log("Sending stop-generation event to server");
+    if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
+      console.log("Отправляем запрос на остановку генерации");
       
-      // Отправляем событие остановки с текущим ID сессии
-      socketRef.current.emit('stop-generation', { 
+      // Отправляем запрос на остановку
+      webSocketRef.current.send(JSON.stringify({
+        type: 'stop-generation',
         sessionId: currentSessionId,
-        timestamp: new Date().getTime() 
-      });
-  
-      // Добавляем заметку к последнему сообщению (необязательно дожидаться ответа сервера)
+        timestamp: new Date().getTime()
+      }));
+      
+      // Добавляем примечание к последнему сообщению
       setMessages(prev => {
         const lastMessage = prev[prev.length - 1];
         if (lastMessage && lastMessage.role === 'assistant') {
@@ -402,29 +437,30 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
             ...lastMessage,
             content: lastMessage.content + "\n\n*Генерация была остановлена пользователем*"
           };
-  
-          // Update session with this message
+          
+          // Обновляем сессию
           updateSessionWithMessage(updatedMessage);
-  
+          
           return [...prev.slice(0, -1), updatedMessage];
         }
         return prev;
       });
       
-      // Локально сбрасываем состояние загрузки даже если сервер не ответил
+      // Сбрасываем состояние загрузки
       setIsLoading(false);
     }
   };
 
+  // Начало нового чата
   const startNewChat = () => {
-    // If generating, stop first
+    // Если идет генерация, останавливаем
     if (isLoading) {
       stopGeneration();
     }
 
     const newSessionId = uuidv4();
 
-    // Save current session before creating new one
+    // Сохраняем текущую сессию перед созданием новой
     if (currentSessionId && messages.length > 0) {
       setSessions(prevSessions => {
         const updatedSessions = prevSessions.map(session =>
@@ -438,16 +474,16 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       });
     }
 
-    // Set new session
+    // Устанавливаем новую сессию
     setCurrentSessionId(newSessionId);
     setMessages([]);
     setAttachments([]);
     setDuplicateFiles({});
 
-    // Create new session
+    // Создаем новую сессию
     const newSession: ChatSession = {
       id: newSessionId,
-      title: 'New chat',
+      title: 'Новый чат',
       messages: [],
       createdAt: new Date(),
       updatedAt: new Date()
@@ -455,19 +491,23 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
     setSessions(prev => [...prev, newSession]);
 
-    // Notify server of session change
-    if (socketRef.current) {
-      socketRef.current.emit('change-session', { sessionId: newSessionId });
+    // Уведомляем сервер о смене сессии
+    if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
+      webSocketRef.current.send(JSON.stringify({
+        type: 'change-session',
+        sessionId: newSessionId
+      }));
     }
   };
 
+  // Загрузка сессии
   const loadSession = (sessionId: string) => {
-    // If generating, stop first
+    // Если идет генерация, останавливаем
     if (isLoading) {
       stopGeneration();
     }
 
-    // Save current session before switching
+    // Сохраняем текущую сессию перед переключением
     if (currentSessionId && messages.length > 0) {
       setSessions(prevSessions => {
         const updatedSessions = prevSessions.map(session =>
@@ -481,7 +521,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       });
     }
 
-    // Load selected session
+    // Загружаем выбранную сессию
     const session = sessions.find(s => s.id === sessionId);
     if (session) {
       setCurrentSessionId(sessionId);
@@ -489,36 +529,40 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       setAttachments([]);
       setDuplicateFiles({});
 
-      // Notify server of session change
-      if (socketRef.current) {
-        socketRef.current.emit('change-session', { sessionId });
+      // Уведомляем сервер о смене сессии
+      if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
+        webSocketRef.current.send(JSON.stringify({
+          type: 'change-session',
+          sessionId
+        }));
       }
     }
   };
 
+  // Обработка загрузки файлов
   const handleFileUpload = (files: File[]) => {
-    // Process files
+    // Обработка файлов
     Array.from(files).forEach(async file => {
-      // For text files, read content
+      // Для текстовых файлов читаем содержимое
       if (file.type.startsWith('text/') ||
-        file.type === 'application/json' ||
-        file.type === 'application/xml' ||
-        file.name.toLowerCase().endsWith('.csv') ||
-        file.name.toLowerCase().endsWith('.html') ||
-        file.name.toLowerCase().endsWith('.htm') ||
-        file.name.toLowerCase().endsWith('.md') ||
-        file.name.toLowerCase().endsWith('.txt') ||
-        file.name.toLowerCase().endsWith('.js') ||
-        file.name.toLowerCase().endsWith('.jsx') ||
-        file.name.toLowerCase().endsWith('.ts') ||
-        file.name.toLowerCase().endsWith('.tsx') ||
-        file.name.toLowerCase().endsWith('.json')) {
+          file.type === 'application/json' ||
+          file.type === 'application/xml' ||
+          file.name.toLowerCase().endsWith('.csv') ||
+          file.name.toLowerCase().endsWith('.html') ||
+          file.name.toLowerCase().endsWith('.htm') ||
+          file.name.toLowerCase().endsWith('.md') ||
+          file.name.toLowerCase().endsWith('.txt') ||
+          file.name.toLowerCase().endsWith('.js') ||
+          file.name.toLowerCase().endsWith('.jsx') ||
+          file.name.toLowerCase().endsWith('.ts') ||
+          file.name.toLowerCase().endsWith('.tsx') ||
+          file.name.toLowerCase().endsWith('.json')) {
 
         const reader = new FileReader();
         reader.onload = (e) => {
           const content = e.target?.result as string;
 
-          // Determine file type based on extension if not provided
+          // Определяем тип файла по расширению, если не указан
           let fileType = file.type;
           if (!fileType || fileType === 'application/octet-stream') {
             const ext = file.name.split('.').pop()?.toLowerCase();
@@ -544,7 +588,7 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         };
         reader.readAsText(file);
       } else {
-        // For binary files, just store metadata
+        // Для бинарных файлов сохраняем только метаданные
         setAttachments(prev => [
           ...prev,
           {
@@ -558,66 +602,70 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     });
   };
 
+  // Удаление вложения
   const removeAttachment = (id: string) => {
     const fileToRemove = attachments.find(att => att.id === id);
 
-    // Remove the attachment
+    // Удаляем вложение
     setAttachments(prevAttachments => prevAttachments.filter(file => file.id !== id));
 
-    // Also remove any duplicate file notifications for this attachment
+    // Удаляем информацию о дубликатах для этого вложения
     if (fileToRemove) {
       setDuplicateFiles(prev => {
-        // Create a new object with explicit typing
         const newState: { [fileName: string]: string } = {};
-
-        // Copy all entries except the one to remove
+        
+        // Копируем все записи, кроме удаляемой
         Object.keys(prev).forEach(key => {
           if (key !== fileToRemove.name) {
             newState[key] = prev[key];
           }
         });
-
+        
         return newState;
       });
     }
   };
 
+  // Удаление чата
   const deleteChat = (sessionId: string) => {
-    // Delete session from list
+    // Удаление сессии из списка
     setSessions(prevSessions => {
-      // Check if we're trying to delete the last chat
+      // Проверяем, пытаемся ли удалить последний чат
       if (prevSessions.length <= 1) {
-        // Create a new one before deleting
+        // Создаем новый перед удалением
         const newSessionId = uuidv4();
         const newSession: ChatSession = {
           id: newSessionId,
-          title: 'New chat',
+          title: 'Новый чат',
           messages: [],
           createdAt: new Date(),
           updatedAt: new Date()
         };
 
-        // If deleting current session, switch to new one
+        // Если удаляем текущую сессию, переключаемся на новую
         if (sessionId === currentSessionId) {
           setCurrentSessionId(newSessionId);
           setMessages([]);
           setAttachments([]);
           setDuplicateFiles({});
 
-          // Notify server of session change
-          if (socketRef.current) {
-            socketRef.current.emit('change-session', { sessionId: newSessionId });
+          // Уведомляем сервер о смене сессии
+          if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
+            webSocketRef.current.send(JSON.stringify({
+              type: 'change-session',
+              sessionId: newSessionId
+            }));
           }
         }
 
-        // Return new array with new session, without deleted one
+        // Возвращаем новый массив с новой сессией, без удаленной
         return [newSession, ...prevSessions.filter(session => session.id !== sessionId)];
       }
 
-      // If not the last chat, just delete
+      // Если не последний чат, просто удаляем
       const filteredSessions = prevSessions.filter(session => session.id !== sessionId);
 
-      // If deleting current session, switch to first available
+      // Если удаляем текущую сессию, переключаемся на первую доступную
       if (sessionId === currentSessionId && filteredSessions.length > 0) {
         const newCurrentSession = filteredSessions[0];
         setCurrentSessionId(newCurrentSession.id);
@@ -625,9 +673,12 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
         setAttachments([]);
         setDuplicateFiles({});
 
-        // Notify server of session change
-        if (socketRef.current) {
-          socketRef.current.emit('change-session', { sessionId: newCurrentSession.id });
+        // Уведомляем сервер о смене сессии
+        if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
+          webSocketRef.current.send(JSON.stringify({
+            type: 'change-session',
+            sessionId: newCurrentSession.id
+          }));
         }
       }
 
@@ -635,13 +686,13 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
     });
   };
 
-  // Change selected model
+  // Смена выбранной модели
   const changeModel = (modelId: string) => {
     setSelectedModel(modelId);
-    console.log(`Model changed to ${modelId}`);
+    console.log(`Модель изменена на ${modelId}`);
   };
 
-  // Refresh knowledge base
+  // Обновление базы знаний
   const refreshKnowledgeBase = () => {
     loadKnowledgeBaseDocuments();
   };
