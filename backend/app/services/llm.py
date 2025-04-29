@@ -4,7 +4,8 @@ import json
 import httpx
 import asyncio
 from typing import List, Dict, Any, Optional, Callable, Union, Awaitable
-from langchain.llms import Ollama
+from langchain_community.llms import Ollama
+
 from langchain.chat_models import ChatOllama
 from langchain.schema import HumanMessage, AIMessage, SystemMessage
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler

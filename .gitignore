@@ -7,11 +7,6 @@
 
 # testing
 /coverage
-/data
-/server/data
-/server/src/data
-/server/documents
-/server/migrations
 
 # production
 /build
