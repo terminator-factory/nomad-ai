@@ -14,6 +14,12 @@ services:
       - REACT_APP_SOCKET_URL=http://localhost:3001
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
 
   # Backend сервис на FastAPI/Python
   backend:
@@ -24,8 +30,9 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
+      - HOST=0.0.0.0
       - LLM_API_URL=http://host.docker.internal:11434/api
-      - ALLOWED_ORIGINS=http://localhost:9090,http://localhost:3000
+      - ALLOWED_ORIGINS=http://localhost:9090,http://localhost:3000,http://frontend:80
       - RAG_ENABLED=true
       - DEBUG=false
     volumes:
@@ -41,26 +48,10 @@ services:
       retries: 3
       start_period: 5s
 
-  # Опционально: Локальный сервис Ollama
-  # Раскомментируйте, если хотите запускать Ollama в Docker
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama-data:/root/.ollama
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: all
-  #             capabilities: [gpu]
-
 networks:
   app-network:
     driver: bridge
 
 # Volumes для хранения данных
 volumes:
-  ollama-data:
+  backend-data:

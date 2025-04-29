@@ -21,6 +21,14 @@ if [ ! -d "backend" ]; then
     mkdir -p backend/data
 fi
 
+# Создаем .env файл в корне проекта
+if [ ! -f ".env" ]; then
+    echo "Создание .env в корне проекта..."
+    echo "SKIP_PREFLIGHT_CHECK=true" > .env
+    echo "BROWSER=none" >> .env
+    echo "REACT_APP_SOCKET_URL=http://localhost:3001" >> .env
+fi
+
 # Проверка наличия Ollama
 OLLAMA_RUNNING=false
 if command -v ollama &> /dev/null; then
@@ -54,26 +62,57 @@ MODE=${1:-dev}
 if [ "$MODE" = "dev" ]; then
     echo "Запуск в режиме разработки..."
     
+    # Установка зависимостей, если не установлены
+    if [ ! -d "node_modules" ]; then
+        echo "Установка зависимостей для фронтенда..."
+        npm install
+    fi
+    
     # Запуск backend
     cd backend
     if [ -f ".env" ]; then
         echo "Используем существующий .env файл для бэкенда."
     else
         echo "Создаем .env из примера..."
-        cp .env.example .env || echo "# Backend .env" > .env
+        if [ -f ".env.example" ]; then
+            cp .env.example .env
+        else
+            echo "# Backend .env" > .env
+            echo "DEBUG=true" >> .env
+            echo "HOST=0.0.0.0" >> .env
+            echo "PORT=3001" >> .env
+            echo "LLM_API_URL=http://localhost:11434/api" >> .env
+            echo "ALLOWED_ORIGINS=http://localhost:3000,http://localhost:9090" >> .env
+            echo "RAG_ENABLED=true" >> .env
+            echo "LLM_TYPE=ollama" >> .env
+            echo "DEFAULT_MODEL=gemma3:4b" >> .env
+        fi
     fi
     
     # Проверка окружения Python
     if [ ! -d "venv" ]; then
         echo "Создание виртуального окружения Python..."
-        python -m venv venv
+        python -m venv venv || python3 -m venv venv
     fi
     
     # Активация venv и установка зависимостей
-    source venv/bin/activate
-    pip install -r requirements.txt
+    if [ -f "venv/bin/activate" ]; then
+        source venv/bin/activate
+    elif [ -f "venv/Scripts/activate" ]; then
+        source venv/Scripts/activate
+    else
+        echo "Виртуальное окружение не найдено. Попробуйте создать его вручную."
+        exit 1
+    fi
+    
+    # Проверка установки зависимостей
+    if [ ! -f "venv/pip-installed" ]; then
+        pip install -r requirements.txt
+        touch venv/pip-installed
+    fi
     
     # Запуск бэкенда в фоне
+    echo "Запуск бэкенда..."
     uvicorn app.main:app --reload --host 0.0.0.0 --port 3001 &
     BACKEND_PID=$!
     cd ..

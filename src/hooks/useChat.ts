@@ -1,4 +1,4 @@
-// src/hooks/useChat.ts - Обновленная версия для работы с Python/FastAPI бэкендом
+// frontend/hooks/useChat.ts
 import { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
@@ -27,7 +27,7 @@ interface KnowledgeBaseDocument {
   chunkCount: number;
 }
 
-// Настраиваем WebSocket URL
+// Настраиваем WebSocket URL с учетом возможной необходимости HTTP-прокси
 const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:3001';
 const WS_URL = SOCKET_URL.replace(/^http/, 'ws');
 
@@ -53,6 +53,8 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
   const webSocketRef = useRef<WebSocket | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const isConnectingRef = useRef<boolean>(false);
 
   // Обработчик сообщений WebSocket
   const handleWebsocketMessage = (event: MessageEvent) => {
@@ -61,6 +63,10 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       const messageType = data.type;
 
       switch (messageType) {
+        case 'connection-established':
+          console.log('WebSocket соединение установлено:', data.connectionId);
+          break;
+
         case 'message-chunk':
           // Обрабатываем чанк сообщения
           setMessages(prevMessages => {
@@ -119,62 +125,133 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
           );
           break;
 
+        case 'pong':
+          // Получен ответ на ping, соединение активно
+          console.log('Получен pong от сервера, соединение активно');
+          break;
+
         default:
-          console.warn(`Получен неизвестный тип сообщения: ${messageType}`);
+          console.log(`Получен тип сообщения: ${messageType}`, data);
       }
     } catch (error) {
       console.error('Ошибка при обработке сообщения WebSocket:', error);
+      setError('Ошибка при обработке ответа от сервера');
     }
   };
 
-  useEffect(() => {
-    // Подключение к WebSocket серверу
-    const connectWebSocket = () => {
+  // Функция для подключения WebSocket
+  const connectWebSocket = () => {
+    if (isConnectingRef.current) return;
+    
+    isConnectingRef.current = true;
+    console.log('Подключение к WebSocket серверу:', `${WS_URL}/ws`);
+    
+    try {
       const ws = new WebSocket(`${WS_URL}/ws`);
       webSocketRef.current = ws;
 
       ws.onopen = () => {
         console.log('WebSocket соединение установлено');
+        isConnectingRef.current = false;
+        
+        // Очищаем таймер переподключения
+        if (reconnectTimerRef.current) {
+          window.clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = null;
+        }
         
         // После подключения запрашиваем модели и документы базы знаний
         loadModels();
         loadKnowledgeBaseDocuments();
+        
+        // Запускаем ping для поддержания соединения
+        startPingInterval();
       };
 
       ws.onmessage = handleWebsocketMessage;
 
       ws.onerror = (error) => {
         console.error('Ошибка WebSocket:', error);
-        setError('Ошибка соединения с сервером. Попробуйте перезагрузить страницу.');
+        isConnectingRef.current = false;
+        setError('Ошибка соединения с сервером. Автоматическое переподключение...');
         
         // Пробуем переподключиться через RESTful API
         loadModels();
       };
 
-      ws.onclose = () => {
-        console.log('WebSocket соединение закрыто');
+      ws.onclose = (event) => {
+        console.log(`WebSocket соединение закрыто. Код: ${event.code}, Причина: ${event.reason}`);
+        isConnectingRef.current = false;
         
-        // Пробуем переподключиться через 3 секунды
-        setTimeout(() => {
-          if (webSocketRef.current === ws) {
-            connectWebSocket();
-          }
-        }, 3000);
+        // Пробуем переподключиться через 3 секунды, если это не было явное закрытие
+        if (event.code !== 1000) {
+          reconnectTimerRef.current = window.setTimeout(() => {
+            if (webSocketRef.current === ws) {
+              console.log('Попытка переподключения к WebSocket...');
+              connectWebSocket();
+            }
+          }, 3000);
+        }
       };
-    };
+    } catch (error) {
+      console.error('Ошибка при создании WebSocket соединения:', error);
+      isConnectingRef.current = false;
+      setError('Не удалось подключиться к серверу. Повторная попытка через 5 секунд...');
+      
+      // Повторная попытка через 5 секунд
+      reconnectTimerRef.current = window.setTimeout(() => {
+        connectWebSocket();
+      }, 5000);
+    }
+  };
+  
+  // Функция для отправки ping
+  const startPingInterval = () => {
+    const pingInterval = setInterval(() => {
+      if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
+        try {
+          webSocketRef.current.send(JSON.stringify({
+            type: 'ping',
+            timestamp: new Date().getTime()
+          }));
+        } catch (error) {
+          console.error('Ошибка при отправке ping:', error);
+          clearInterval(pingInterval);
+        }
+      } else {
+        // Если соединение закрыто, останавливаем интервал
+        clearInterval(pingInterval);
+      }
+    }, 30000); // Каждые 30 секунд
+    
+    // Очищаем интервал при размонтировании
+    return () => clearInterval(pingInterval);
+  };
 
+  useEffect(() => {
+    // Инициализация WebSocket при монтировании компонента
     connectWebSocket();
 
     // Загружаем сессии из локального хранилища
     const savedSessions = localStorage.getItem('chatSessions');
     if (savedSessions) {
-      setSessions(JSON.parse(savedSessions));
+      try {
+        setSessions(JSON.parse(savedSessions));
+      } catch (e) {
+        console.error('Ошибка при разборе сохраненных сессий:', e);
+        localStorage.removeItem('chatSessions');
+      }
     }
 
     return () => {
       // Закрываем соединение при размонтировании
       if (webSocketRef.current) {
         webSocketRef.current.close();
+      }
+      
+      // Очищаем таймер переподключения
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
       }
     };
   }, []);
@@ -187,7 +264,11 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
   // Save sessions to local storage
   useEffect(() => {
     if (sessions.length > 0) {
-      localStorage.setItem('chatSessions', JSON.stringify(sessions));
+      try {
+        localStorage.setItem('chatSessions', JSON.stringify(sessions));
+      } catch (e) {
+        console.error('Ошибка при сохранении сессий в localStorage:', e);
+      }
     }
   }, [sessions]);
 
@@ -222,7 +303,12 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
       });
 
       // Save updated sessions to localStorage
-      localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+      try {
+        localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+      } catch (e) {
+        console.error('Ошибка при сохранении сессий в localStorage:', e);
+      }
+      
       return updatedSessions;
     });
   };
@@ -301,7 +387,22 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
   // Отправка сообщения
   const sendMessage = async (content: string) => {
-    if ((!content.trim() && attachments.length === 0) || !webSocketRef.current) return;
+    if ((!content.trim() && attachments.length === 0)) {
+      console.log('Пустое сообщение или нет WebSocket соединения');
+      return;
+    }
+    
+    // Проверяем состояние WebSocket
+    if (!webSocketRef.current || webSocketRef.current.readyState !== WebSocket.OPEN) {
+      console.log('WebSocket соединение не установлено, попытка переподключения...');
+      setError('Соединение с сервером потеряно. Переподключение...');
+      
+      // Попытка переподключения
+      connectWebSocket();
+      
+      // Выходим из метода, пользователь должен повторить попытку
+      return;
+    }
 
     // Если уже идет генерация, останавливаем
     if (isLoading) {
@@ -402,7 +503,11 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
 
       // Сохраняем сессии в localStorage
       setTimeout(() => {
-        localStorage.setItem('chatSessions', JSON.stringify(sessions));
+        try {
+          localStorage.setItem('chatSessions', JSON.stringify(sessions));
+        } catch (e) {
+          console.error('Ошибка при сохранении сессий в localStorage:', e);
+        }
       }, 100);
 
     } catch (err) {
@@ -469,7 +574,12 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
             : session
         );
 
-        localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+        try {
+          localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+        } catch (e) {
+          console.error('Ошибка при сохранении сессий в localStorage:', e);
+        }
+        
         return updatedSessions;
       });
     }
@@ -516,7 +626,12 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
             : session
         );
 
-        localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+        try {
+          localStorage.setItem('chatSessions', JSON.stringify(updatedSessions));
+        } catch (e) {
+          console.error('Ошибка при сохранении сессий в localStorage:', e);
+        }
+        
         return updatedSessions;
       });
     }
@@ -586,6 +701,12 @@ const useChat = ({ initialMessages = [], sessionId = uuidv4() }: UseChatProps = 
             }
           ]);
         };
+        
+        reader.onerror = () => {
+          console.error(`Ошибка при чтении файла: ${file.name}`);
+          setError(`Не удалось прочитать файл: ${file.name}`);
+        };
+        
         reader.readAsText(file);
       } else {
         // Для бинарных файлов сохраняем только метаданные
