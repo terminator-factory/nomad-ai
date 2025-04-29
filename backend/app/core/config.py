@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Базовая директория проекта
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
